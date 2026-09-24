@@ -88,3 +88,35 @@ stating plainly so nobody later mistakes a throughput spike for a working model.
 
 M0 scaffold on `chore/scaffold`: pyproject with pinned deps, ruff, pytest, CI. Committed
 in parts per the new version-control rule.
+
+## 2026-09-24 — M1 data pipeline
+
+**`datasets` was dropped.** `load_dataset(..., streaming=True)` hung indefinitely on
+TinyStories while the Hub API itself answered in 150 ms, so the dependency was buying a
+failure rather than a convenience. Replaced with `huggingface_hub.hf_hub_download` plus
+`pyarrow` reading the parquet shards directly — a smaller surface, and both libraries
+were already installed as transitive dependencies of `datasets`.
+
+**The split comes from upstream.** TinyStories ships its own train/validation split, so
+FR2.3's determinism requirement is satisfied by construction. No seed to fix, and no way
+for a reshuffle to silently change what validation loss means between runs. Simpler than
+the seeded document split the design originally described, and strictly safer.
+
+**Byte-level BPE, not word-level.** Every input is representable, so `decode(encode(x))`
+holds for arbitrary text rather than only for text the vocabulary happens to cover.
+Tested against characters absent from the training corpus.
+
+**Corpus built.** 466,768,869 train tokens, 4,691,376 validation tokens at vocab 8,192,
+from four shards in 2m15s — far faster than expected, since `tokenizers` is Rust and ran
+at 522% CPU. 4.12 chars/token. A 50M sweep run sees 10.7% of the corpus, the 200M
+flagship 42.8%, so no run repeats data. 890 MB of `.bin`, all gitignored.
+
+**Ruff earned its place.** It caught two unescaped dots in `pytest.raises(match=...)`
+patterns, which would have matched more loosely than intended and could have let a wrong
+error message pass a test.
+
+### Next step
+
+M2, the model, on `feat/gpt-model`. The correctness milestone: attention must match
+`F.scaled_dot_product_attention` numerically, and causality is tested by perturbation
+rather than by inspecting the mask.

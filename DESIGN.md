@@ -44,8 +44,16 @@ flat rather than as padded sequences means a batch is just `N` random offsets in
 array — no padding, no attention-mask bookkeeping, and every token in a batch contributes
 to the loss.
 
-The split is by document, not by token offset, so validation text never appears as a
+**The split comes from upstream, not from a seed.** TinyStories ships its own
+train/validation split, so FR2.3's determinism requirement is satisfied by construction —
+there is no RNG to fix and no chance of a reshuffle silently changing what validation
+loss means between runs. The split is by document, so validation text never appears as a
 training-sequence suffix.
+
+Built 2026-09-24: **466,768,869 train tokens, 4,691,376 validation tokens** at vocab
+8,192, from four parquet shards in 2m15s. That works out to 4.12 characters per token.
+A 50M-token sweep run sees 10.7% of the corpus and the 200M flagship sees 42.8%, so no
+run repeats data.
 
 ### 2.2 `minigpt/model.py` — the transformer
 
