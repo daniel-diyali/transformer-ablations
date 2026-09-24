@@ -30,3 +30,29 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["minigpt*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# spikes/ holds throwaway prototypes: deliberately unpolished, never merged.
+# *.md is excluded because ruff formats Python inside fenced blocks, and the
+# design docs align their snippets for reading rather than to a formatter.
+extend-exclude = ["spikes", "*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes — unused imports and names
+    "I",        # import sorting
+    "B",        # bugbear — mutable defaults, silently-wrong comparisons
+    "UP",       # pyupgrade
+    "SIM",      # simplification
+    "RUF",
+]
+ignore = [
+    "E741",     # ambiguous names: q, k, v, l, B, T, C are the vocabulary of this domain
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on magic numbers by design — that is what a specification looks like.
+"tests/*" = ["E501"]
