@@ -4,10 +4,11 @@ A GPT-style decoder-only transformer implemented from scratch in PyTorch, traine
 roughly 14M parameters, used to run **controlled ablations on architectural choices** —
 with multiple seeds per condition and variance reported honestly.
 
-> **Status: corpus built, model not yet written.**
-> Design signed off, CI green, throughput measured, 466.8M tokens encoded and ready.
-> No trained results yet — the model lands next. This section gets replaced with
-> findings and charts as they arrive; see [PLAN.md](PLAN.md) for where the project is.
+> **Status: model implemented and verified, not yet trained.**
+> Attention is checked against PyTorch's fused kernel to 1e-12 and causality is tested
+> by perturbation. 83 tests, ~1.5s. No loss curves yet — training lands next. This
+> section gets replaced with findings and charts as they arrive; see
+> [PLAN.md](PLAN.md) for where the project is.
 
 ## What this is
 

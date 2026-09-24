@@ -279,8 +279,13 @@ than claiming universality.
 | Context | 256 |
 | Vocab | 8,192 |
 | Batch size | 32 (measured: the device saturates here) |
-| Parameters | ≈ 13.9M (≈ 10.7M non-embedding) |
+| Parameters | **13.89M measured** (13.79M non-embedding) |
 | Token budget | **50M — confirmed, not provisional** |
+
+Non-embedding follows the nanoGPT convention: position embeddings are subtracted, token
+embeddings are not, because weight tying means that matrix is also the output head and
+is therefore doing work at every position. An earlier draft said 10.7M by subtracting the
+token embedding too; the figure above is measured from the built model.
 
 At the measured 23,500 tok/s, a 50M-token run takes **35 minutes**, inside the 45-minute
 NFR3 ceiling. The full 27-run sweep is **~16 hours**, which is two overnight sessions.
