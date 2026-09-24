@@ -106,6 +106,15 @@ def build_tokenizer(cfg: DataConfig, train_paths: list[Path]) -> Tokenizer:
     Byte-level means every input is representable, so decode(encode(x)) == x
     holds for arbitrary text rather than only for text the vocabulary covers.
     """
+    # Byte-level BPE starts from all 256 byte values and adds the special
+    # tokens, so no vocabulary smaller than that can exist.
+    floor = 256 + 1  # 256 bytes + END_OF_TEXT
+    if cfg.vocab_size < floor:
+        raise ValueError(
+            f"vocab_size={cfg.vocab_size} is below the byte-level floor of {floor} "
+            f"(256 byte values plus {END_OF_TEXT})"
+        )
+
     tokenizer = Tokenizer(models.BPE(unk_token=None))
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     tokenizer.decoder = decoders.ByteLevel()
