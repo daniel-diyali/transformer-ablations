@@ -253,3 +253,99 @@ class Block(nn.Module):
             return x + self.mlp(self.norm_mlp(x))
         x = self.norm_attn(x + self.attn(x, cos, sin))
         return self.norm_mlp(x + self.mlp(x))
+
+
+# -------------------------------------------------------------------- model
+
+
+class GPT(nn.Module):
+    """Decoder-only transformer.
+
+    `forward` returns `(logits, loss)`, where loss is None unless targets are
+    supplied — so the same call serves training and generation.
+    """
+
+    def __init__(self, cfg: GPTConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+        self.token_embedding = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        if cfg.pos_encoding == "learned":
+            self.position_embedding = nn.Embedding(cfg.n_positions, cfg.d_model)
+        elif cfg.pos_encoding == "sinusoidal":
+            # Not a parameter: fixed, and excluded from the optimizer.
+            self.register_buffer(
+                "position_table",
+                sinusoidal_encoding(cfg.n_positions, cfg.d_model),
+                persistent=False,
+            )
+
+        self.drop = nn.Dropout(cfg.dropout)
+        self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg.n_layer))
+        self.norm_final = nn.LayerNorm(cfg.d_model, bias=cfg.bias)
+        self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+
+        if cfg.tie_weights:
+            # Input and output embeddings share one matrix. Saves vocab*d_model
+            # parameters and ties the two views of "what this token means".
+            self.lm_head.weight = self.token_embedding.weight
+
+        self.apply(self._init_weights)
+        # Residual projections are scaled down by depth so the residual stream
+        # does not grow as layers are stacked (GPT-2, section 2.3).
+        scale = (2 * cfg.n_layer) ** -0.5
+        for name, param in self.named_parameters():
+            if name.endswith("proj.weight"):
+                nn.init.normal_(param, mean=0.0, std=0.02 * scale)
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def num_params(self, non_embedding: bool = True) -> int:
+        """Parameter count. Position embeddings are excluded by convention."""
+        total = sum(p.numel() for p in self.parameters())
+        if non_embedding and self.cfg.pos_encoding == "learned":
+            total -= self.position_embedding.weight.numel()
+        return total
+
+    def forward(self, idx: Tensor, targets: Tensor | None = None) -> tuple[Tensor, Tensor | None]:
+        _, t = idx.shape
+        cfg = self.cfg
+
+        x = self.token_embedding(idx)
+        cos = sin = None
+
+        if cfg.pos_encoding == "learned":
+            if t > cfg.n_positions:
+                raise ValueError(
+                    f"sequence length {t} exceeds the {cfg.n_positions} learned position "
+                    "embeddings this model has. Raise pos_capacity to evaluate beyond the "
+                    "training context."
+                )
+            x = x + self.position_embedding(torch.arange(t, device=idx.device))
+        elif cfg.pos_encoding == "sinusoidal":
+            # Deterministic, so it extends past n_positions for free.
+            table = (
+                self.position_table
+                if t <= cfg.n_positions
+                else sinusoidal_encoding(t, cfg.d_model).to(idx.device)
+            )
+            x = x + table[:t].to(x.dtype)
+        else:
+            cos, sin = rope_tables(t, cfg.head_dim, cfg.rope_base, idx.device, x.dtype)
+
+        x = self.drop(x)
+        for block in self.blocks:
+            x = block(x, cos, sin)
+        logits = self.lm_head(self.norm_final(x))
+
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+        return logits, loss
