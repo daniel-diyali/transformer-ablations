@@ -13,8 +13,12 @@ them all.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
+
+import torch
+from torch import Tensor
 
 NormPlacement = Literal["pre", "post"]
 PosEncoding = Literal["learned", "sinusoidal", "rope"]
@@ -76,3 +80,69 @@ class GPTConfig:
     def n_positions(self) -> int:
         """How many distinct positions the model can encode."""
         return self.pos_capacity if self.pos_capacity is not None else self.block_size
+
+
+# ------------------------------------------------------- positional encoding
+#
+# Three schemes, and they do not enter the model at the same place.
+#
+#   learned / sinusoidal  add a vector to the token embedding, once, before
+#                         the first block.
+#   rope                  rotates q and k inside every attention layer and
+#                         never touches the residual stream.
+#
+# That asymmetry is inherent to the methods, not an artefact of this code.
+
+
+def sinusoidal_encoding(n_positions: int, d_model: int, base: float = 10_000.0) -> Tensor:
+    """Fixed sin/cos position table from "Attention Is All You Need", section 3.5.
+
+    Even dimensions carry sine, odd carry cosine, with wavelengths in a
+    geometric progression. Deterministic, so it extends to any length without
+    training.
+    """
+    position = torch.arange(n_positions, dtype=torch.float32).unsqueeze(1)
+    i = torch.arange(0, d_model, 2, dtype=torch.float32)
+    div = torch.exp(-math.log(base) * i / d_model)
+
+    pe = torch.zeros(n_positions, d_model)
+    pe[:, 0::2] = torch.sin(position * div)
+    pe[:, 1::2] = torch.cos(position * div)[:, : pe[:, 1::2].shape[1]]
+    return pe
+
+
+def rope_tables(
+    seq_len: int,
+    head_dim: int,
+    base: float = 10_000.0,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> tuple[Tensor, Tensor]:
+    """cos and sin tables for rotary embedding, each `(seq_len, head_dim)`.
+
+    Computed for whatever length is asked for, which is what lets a RoPE model
+    be evaluated beyond its training context at all.
+    """
+    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
+    angles = torch.outer(torch.arange(seq_len, device=device).float(), inv_freq)
+    # Duplicated so each half of the head dimension rotates against the other.
+    emb = torch.cat([angles, angles], dim=-1)
+    return emb.cos().to(dtype), emb.sin().to(dtype)
+
+
+def _rotate_half(x: Tensor) -> Tensor:
+    half = x.shape[-1] // 2
+    return torch.cat([-x[..., half:], x[..., :half]], dim=-1)
+
+
+def apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    """Rotate `(B, H, T, head_dim)` by position-dependent angles.
+
+    Rotating both q and k makes their dot product depend only on the distance
+    between the two positions, never on where the pair sits in the sequence.
+    That relative-position property is the whole reason RoPE extrapolates, and
+    the tests assert it directly.
+    """
+    t = x.shape[-2]
+    cos, sin = cos[:t].unsqueeze(0).unsqueeze(0), sin[:t].unsqueeze(0).unsqueeze(0)
+    return x * cos + _rotate_half(x) * sin
