@@ -9,15 +9,22 @@ same amount of data, or the comparison between them means nothing.
 
 from __future__ import annotations
 
+import json
 import math
 import platform
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 
-from minigpt.model import GPTConfig
+from minigpt.data import get_batch, load_tokens
+from minigpt.model import GPT, GPTConfig
+
+DONE_MARKER = "DONE.json"
+FAILED_MARKER = "FAILED.json"
 
 
 def pick_device(requested: str | None = None) -> str:
@@ -75,6 +82,13 @@ class TrainConfig:
     wandb_project: str = "transformer-ablations"
 
     def __post_init__(self) -> None:
+        # Coerce paths so a CLI, a JSON round-trip, or a caller passing a
+        # string all produce the same config. Frozen dataclass, hence setattr.
+        for name in ("data_dir", "out_dir"):
+            value = getattr(self, name)
+            if not isinstance(value, Path):
+                object.__setattr__(self, name, Path(value))
+
         if self.token_budget < 1:
             raise ValueError(f"token_budget must be positive, got {self.token_budget}")
         if self.batch_size < 1 or self.grad_accum < 1:
@@ -255,3 +269,164 @@ def _maybe_resume(
     torch.set_rng_state(state["torch_rng"])
     print(f"resuming {run_dir} at {state['tokens_seen']:,} tokens")
     return state
+
+
+# ------------------------------------------------------------------ evaluation
+
+# Fixed so every evaluation, in every run, scores the same validation batches.
+# A moving evaluation set would add noise that looks exactly like a real
+# difference between conditions.
+EVAL_SEED = 1234
+
+
+@torch.no_grad()
+def evaluate(
+    model: torch.nn.Module,
+    tokens: np.ndarray,
+    cfg: TrainConfig,
+    device: str,
+    block_size: int | None = None,
+) -> float:
+    """Mean loss over a fixed set of validation batches."""
+    was_training = model.training
+    model.eval()
+    generator = torch.Generator().manual_seed(EVAL_SEED)
+    block = block_size or cfg.eval_block_size or cfg.model.block_size
+
+    total = 0.0
+    for _ in range(cfg.eval_batches):
+        x, y = get_batch(tokens, cfg.batch_size, block, device, generator)
+        _, loss = model(x, y)
+        total += loss.item()
+
+    model.train(was_training)
+    return total / cfg.eval_batches
+
+
+# -------------------------------------------------------------- training loop
+
+
+def train(cfg: TrainConfig, resume: bool = True) -> dict:
+    """Train one model to its token budget. Returns the run record."""
+    run_dir = cfg.run_dir()
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if (run_dir / DONE_MARKER).exists():
+        print(f"{run_dir} is already complete, skipping")
+        return json.loads((run_dir / DONE_MARKER).read_text())
+
+    torch.manual_seed(cfg.seed)
+    device = pick_device(cfg.device)
+
+    train_tokens = load_tokens("train", cfg.data_dir)
+    val_tokens = load_tokens("val", cfg.data_dir)
+
+    model = GPT(cfg.model).to(device)
+    optimizer = build_optimizer(model, cfg)
+    model.train()
+
+    state = _maybe_resume(run_dir, model, optimizer, cfg) if resume else None
+    tokens_seen = state["tokens_seen"] if state else 0
+    step = state["step"] if state else 0
+    next_eval = state["next_eval"] if state else 0
+
+    (run_dir / "config.json").write_text(
+        json.dumps({"config": _config_to_dict(cfg), "provenance": provenance(device)}, indent=2)
+        + "\n"
+    )
+
+    batch_generator = torch.Generator().manual_seed(cfg.seed)
+    if state is not None:
+        batch_generator.set_state(state["batch_generator"])
+
+    metrics_path = run_dir / "metrics.jsonl"
+    started = time.perf_counter()
+    elapsed_before = state["elapsed_s"] if state else 0.0
+
+    while tokens_seen < cfg.token_budget:
+        lr = lr_at_token(tokens_seen, cfg)
+        set_lr(optimizer, lr)
+        optimizer.zero_grad(set_to_none=True)
+
+        step_loss = 0.0
+        for _ in range(cfg.grad_accum):
+            x, y = get_batch(
+                train_tokens, cfg.batch_size, cfg.model.block_size, device, batch_generator
+            )
+            _, loss = model(x, y)
+            (loss / cfg.grad_accum).backward()
+            step_loss += loss.item() / cfg.grad_accum
+            tokens_seen += x.numel()
+
+        if not math.isfinite(step_loss):
+            # A diverged run is data, not an error to hide. Post-norm may
+            # legitimately blow up, and that is the finding.
+            record = {
+                "status": "failed",
+                "reason": "non-finite loss",
+                "step": step,
+                "tokens_seen": tokens_seen,
+                "last_loss": step_loss,
+            }
+            (run_dir / FAILED_MARKER).write_text(json.dumps(record, indent=2) + "\n")
+            print(f"ABORT: non-finite loss at step {step}, {tokens_seen:,} tokens")
+            return record
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        optimizer.step()
+        step += 1
+
+        if tokens_seen >= next_eval or tokens_seen >= cfg.token_budget:
+            elapsed = elapsed_before + time.perf_counter() - started
+            entry = {
+                "step": step,
+                "tokens": tokens_seen,
+                "train_loss": round(step_loss, 6),
+                "val_loss": round(evaluate(model, val_tokens, cfg, device), 6),
+                "lr": lr,
+                "elapsed_s": round(elapsed, 2),
+                "tokens_per_s": round(tokens_seen / max(elapsed, 1e-9)),
+            }
+            with metrics_path.open("a") as fh:
+                fh.write(json.dumps(entry) + "\n")
+            print(
+                f"step {entry['step']:>6} | {entry['tokens']:>12,} tok | "
+                f"train {entry['train_loss']:.4f} | val {entry['val_loss']:.4f} | "
+                f"lr {lr:.2e} | {entry['tokens_per_s']:,} tok/s"
+            )
+            next_eval = tokens_seen + cfg.eval_interval_tokens
+            _save_checkpoint(
+                run_dir,
+                model,
+                optimizer,
+                cfg,
+                step,
+                tokens_seen,
+                next_eval,
+                elapsed,
+                batch_generator,
+            )
+
+    elapsed = elapsed_before + time.perf_counter() - started
+    record = {
+        "status": "completed",
+        "step": step,
+        "tokens_seen": tokens_seen,
+        "final_val_loss": evaluate(model, val_tokens, cfg, device),
+        "best_val_loss": _best_val_loss(metrics_path),
+        "elapsed_s": round(elapsed, 2),
+        "tokens_per_s": round(tokens_seen / max(elapsed, 1e-9)),
+        "device": device,
+        "run_dir": str(run_dir),
+    }
+    (run_dir / DONE_MARKER).write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
+def _best_val_loss(metrics_path: Path) -> float | None:
+    if not metrics_path.exists():
+        return None
+    losses = [
+        json.loads(line)["val_loss"] for line in metrics_path.read_text().splitlines() if line
+    ]
+    return min(losses) if losses else None
