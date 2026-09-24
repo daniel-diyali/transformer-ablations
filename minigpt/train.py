@@ -9,6 +9,7 @@ same amount of data, or the comparison between them means nothing.
 
 from __future__ import annotations
 
+import math
 import platform
 import subprocess
 from dataclasses import dataclass
@@ -132,3 +133,51 @@ def _git_sha() -> str | None:
 def _git_dirty() -> bool | None:
     status = _git("status", "--porcelain")
     return None if status is None else bool(status)
+
+
+# ------------------------------------------------------ optimizer and schedule
+
+
+def build_optimizer(model: torch.nn.Module, cfg: TrainConfig) -> torch.optim.AdamW:
+    """AdamW with weight decay applied only to matrices.
+
+    Biases and LayerNorm gains are one-dimensional and are excluded. Decaying
+    a LayerNorm gain pulls it toward zero, which shrinks the signal the norm
+    exists to standardise — a quiet bug that shows up as slightly worse loss
+    and nothing else.
+    """
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    decay = [p for p in trainable if p.dim() >= 2]
+    no_decay = [p for p in trainable if p.dim() < 2]
+
+    return torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": cfg.weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=cfg.lr,
+        betas=cfg.betas,
+    )
+
+
+def lr_at_token(tokens_seen: int, cfg: TrainConfig) -> float:
+    """Linear warmup then cosine decay, measured in tokens rather than steps.
+
+    Keying the schedule to tokens means two conditions with different batch
+    shapes follow the same curve over the same data, instead of one of them
+    decaying faster because it happens to take more steps.
+    """
+    warmup = cfg.warmup_tokens
+    if warmup > 0 and tokens_seen < warmup:
+        # +1 so the very first step has a non-zero learning rate.
+        return cfg.lr * (tokens_seen + 1) / warmup
+
+    span = max(cfg.token_budget - warmup, 1)
+    progress = min(max((tokens_seen - warmup) / span, 0.0), 1.0)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return cfg.min_lr + (cfg.lr - cfg.min_lr) * cosine
+
+
+def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
