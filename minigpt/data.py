@@ -13,6 +13,7 @@ every token in a batch contributes to the loss.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
+import torch
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
@@ -169,7 +171,7 @@ def encode_split(tokenizer: Tokenizer, paths: list[Path], out_path: Path, cfg: D
             if len(batch) >= cfg.encode_batch_size:
                 total += flush(batch)
                 batch = []
-                print(f"  {out_path.name}: {total:,} tokens", end="\r", file=sys.stderr)
+                _progress(f"  {out_path.name}: {total:,} tokens")
         total += flush(batch)
 
     print(f"  {out_path.name}: {total:,} tokens", file=sys.stderr)
@@ -200,5 +202,93 @@ def prepare(cfg: DataConfig) -> dict:
     return meta
 
 
+def _progress(line: str) -> None:
+    """Overwrite in place on a terminal; stay quiet when piped to a log."""
+    if sys.stderr.isatty():
+        print(line, end="\r", file=sys.stderr)
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+# ------------------------------------------------------------------ loading
+
+
+def load_meta(data_dir: Path = Path("data")) -> dict:
+    meta_path = data_dir / "meta.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"{meta_path} missing. {REBUILD}")
+    return json.loads(meta_path.read_text())
+
+
+def load_tokens(split: str, data_dir: Path = Path("data")) -> np.memmap:
+    """Memory-map a split. Fails loudly if it disagrees with meta.json."""
+    path = data_dir / f"{split}.bin"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} missing. {REBUILD}")
+
+    tokens = np.memmap(path, dtype=np.uint16, mode="r")
+    expected = load_meta(data_dir).get(f"n_{split}_tokens")
+    if expected is not None and tokens.size != expected:
+        raise RuntimeError(
+            f"{path} holds {tokens.size:,} tokens but meta.json claims {expected:,}. "
+            f"The corpus and its metadata disagree. {REBUILD}"
+        )
+    return tokens
+
+
+def get_batch(
+    tokens: np.ndarray,
+    batch_size: int,
+    block_size: int,
+    device: str = "cpu",
+    generator: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample a batch of (context, next-token) pairs at random offsets.
+
+    `y` is `x` shifted one position, so every position in the block supplies a
+    training signal.
+    """
+    if tokens.size < block_size + 1:
+        raise ValueError(f"need at least {block_size + 1} tokens, corpus has {tokens.size}")
+
+    high = tokens.size - block_size - 1
+    ix = torch.randint(high, (batch_size,), generator=generator)
+
+    # np.memmap slices are views; astype forces the copy torch.from_numpy needs.
+    x = torch.stack([torch.from_numpy(tokens[i : i + block_size].astype(np.int64)) for i in ix])
+    y = torch.stack(
+        [torch.from_numpy(tokens[i + 1 : i + 1 + block_size].astype(np.int64)) for i in ix]
+    )
+    return x.to(device), y.to(device)
+
+
+# ---------------------------------------------------------------------- cli
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["prepare", "inspect"])
+    parser.add_argument("--vocab-size", type=int, default=DataConfig.vocab_size)
+    parser.add_argument("--shards", type=int, default=DataConfig.n_train_shards)
+    parser.add_argument("--data-dir", type=Path, default=DataConfig.data_dir)
+    args = parser.parse_args(argv)
+
+    cfg = DataConfig(vocab_size=args.vocab_size, n_train_shards=args.shards, data_dir=args.data_dir)
+
+    if args.command == "prepare":
+        meta = prepare(cfg)
+        print(json.dumps(meta, indent=2))
+    else:
+        meta = load_meta(cfg.data_dir)
+        tokenizer = load_tokenizer(cfg)
+        tokens = load_tokens("train", cfg.data_dir)
+        print(json.dumps(meta, indent=2))
+        print("\n--- decoded sample ---")
+        print(tokenizer.decode(tokens[:200].astype(np.int64).tolist()))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
