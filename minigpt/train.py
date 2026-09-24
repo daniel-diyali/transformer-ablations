@@ -304,6 +304,28 @@ def evaluate(
     return total / cfg.eval_batches
 
 
+def _wandb_run(cfg: TrainConfig, device: str):
+    """Optional second logging destination. JSONL remains the source of truth.
+
+    Nothing in the pipeline reads from W&B, so a missing account, a network
+    failure or an uninstalled package costs a run nothing but a dashboard.
+    """
+    if not cfg.log_wandb:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "--wandb requires the optional extra: uv pip install -e '.[wandb]'"
+        ) from exc
+
+    return wandb.init(
+        project=cfg.wandb_project,
+        name=cfg.run_dir().name,
+        config={**_config_to_dict(cfg), **provenance(device)},
+    )
+
+
 # -------------------------------------------------------------- training loop
 
 
@@ -340,6 +362,7 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
     if state is not None:
         batch_generator.set_state(state["batch_generator"])
 
+    wandb_run = _wandb_run(cfg, device)
     metrics_path = run_dir / "metrics.jsonl"
     started = time.perf_counter()
     elapsed_before = state["elapsed_s"] if state else 0.0
@@ -390,6 +413,8 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
             }
             with metrics_path.open("a") as fh:
                 fh.write(json.dumps(entry) + "\n")
+            if wandb_run is not None:
+                wandb_run.log(entry, step=entry["step"])
             print(
                 f"step {entry['step']:>6} | {entry['tokens']:>12,} tok | "
                 f"train {entry['train_loss']:.4f} | val {entry['val_loss']:.4f} | "
@@ -421,6 +446,9 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
         "run_dir": str(run_dir),
     }
     (run_dir / DONE_MARKER).write_text(json.dumps(record, indent=2) + "\n")
+    if wandb_run is not None:
+        wandb_run.summary.update(record)
+        wandb_run.finish()
     return record
 
 
