@@ -179,13 +179,10 @@ project is worth putting on a resume regardless of what follows.
 - DESIGN.md gets updated when reality diverges from it — particularly the M3 budget
   revision.
 
-## Blocked on sign-off
+## Sign-off
 
-Five open questions in REQUIREMENTS §7. Three of them gate work:
+Signed off by Daniel on 2026-09-24. All five open questions resolved — see
+REQUIREMENTS §7. Ablations are A1 + A2 + A3, corpus is TinyStories, W&B goes in behind an
+optional flag, and the repo is public from the start.
 
-- **Q1 ablation selection** — blocks M6, and partly M2, since the config fields have to
-  cover the chosen conditions.
-- **Q2 corpus** — blocks M1.
-- **Q5 GitHub repo creation** — needs explicit approval before anything is pushed.
-
-Q3 (W&B) and Q4 (repo name) can be decided later without stalling.
+Nothing is blocking. Next action is the day-1 throughput spike, then M0.

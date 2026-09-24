@@ -41,13 +41,20 @@ interviewer asks about.
 **Python 3.11 via `uv`.** System Python here is 3.9.6, too old for current torch. `uv`
 was already installed.
 
-### Open, blocking
+## 2026-09-24 — Signed off
 
-Q1 (which three ablations), Q2 (corpus), and Q5 (GitHub repo creation) gate work — see
-REQUIREMENTS §7 and PLAN "Blocked on sign-off". Q3 (W&B) and Q4 (repo name) can be
-decided later.
+Daniel reviewed the three docs and resolved all five open questions in one pass; every
+recommendation was accepted. Ablations are A1 (norm placement) + A2 (positional encoding)
++ A3 (head count), corpus is TinyStories, W&B goes in behind an optional flag with JSONL
+as the source of truth, repo name stays `transformer-ablations`, and the repo is public
+from the first commit.
+
+Consequence worth recording: because the repo is public from commit one, the git history
+is part of the artifact. Branch names, commit messages, and PR descriptions are readable
+by anyone evaluating the project, so they get the same care as the code.
 
 ### Next step
 
-Daniel reviews REQUIREMENTS / DESIGN / PLAN. On sign-off: day-1 throughput spike, then
-M0 scaffold.
+Day-1 throughput spike (throwaway, `spikes/`, not merged) to measure MPS tokens/sec and
+peak memory and to surface any MPS operator gaps. Its numbers set the token budgets in
+DESIGN §7, which currently hold estimates rather than measurements. Then M0 scaffold.

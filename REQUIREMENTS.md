@@ -148,20 +148,21 @@ Each of these is a question in disguise. Flagged for review.
 - **A7** Weights & Biases free tier is acceptable as an *optional* logging backend. The
   JSONL logs remain the source of truth so the repo works with no account.
 
-## 7. Open questions for Daniel
+## 7. Decisions — resolved 2026-09-24
 
-- **Q1** Which three ablations? Recommendation and reasoning are in DESIGN.md §6. The
-  positional-encoding study is the one with the most interesting chart, and the one most
-  connected to how current models are actually built.
-- **Q2** Corpus: TinyStories as recommended, or something with more personality? A
-  domain corpus you care about is more memorable in an interview but risks weaker samples
-  at this scale.
-- **Q3** Add Weights & Biases as an optional backend? It costs little and puts named
-  industry observability tooling on the resume, which was a flagged gap.
-- **Q4** Repo name. `transformer-ablations` leads with the differentiator rather than the
-  commodity ("from scratch"). Alternatives: `minigpt-lab`, `attention-ablations`.
-- **Q5** Create the public GitHub repo now, or keep it local until the baseline trains?
-  Repo creation needs your go-ahead either way.
+All five open questions answered by Daniel at sign-off. Nothing is blocking.
+
+- **Q1 Ablations → A1 + A2 + A3.** Layer-norm placement, positional encoding (with
+  long-context evaluation), and head count at fixed width. 9 conditions × 3 seeds =
+  27 runs. A4 (LR schedule) stays a stretch goal, run only if the budget allows.
+- **Q2 Corpus → TinyStories.** Coherent English at ~14M parameters matters more than a
+  more personal corpus that would produce weaker samples at this scale.
+- **Q3 Weights & Biases → yes, optional, behind a flag.** JSONL remains the source of
+  truth; the repo must work fully with no account and no network.
+- **Q4 Repo name → `transformer-ablations`.** Leads with the differentiator rather than
+  the commodity part.
+- **Q5 GitHub → create public immediately.** Work is off this machine from commit one,
+  and the git history itself becomes evidence of how the project was built.
 
 ## 8. Definition of done
 
