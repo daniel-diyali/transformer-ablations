@@ -9,6 +9,7 @@ same amount of data, or the comparison between them means nothing.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import platform
@@ -20,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from minigpt.data import get_batch, load_tokens
+from minigpt.data import get_batch, load_meta, load_tokens
 from minigpt.model import GPT, GPTConfig
 
 DONE_MARKER = "DONE.json"
@@ -430,3 +431,97 @@ def _best_val_loss(metrics_path: Path) -> float | None:
         json.loads(line)["val_loss"] for line in metrics_path.read_text().splitlines() if line
     ]
     return min(losses) if losses else None
+
+
+# ---------------------------------------------------------------------- cli
+
+
+def build_config(args: argparse.Namespace) -> TrainConfig:
+    """Assemble a config from CLI arguments.
+
+    vocab_size is read from the corpus metadata rather than accepted as a
+    flag, so a model can never be built with a vocabulary its data does not
+    match — a mismatch that would train happily and produce nonsense.
+    """
+    meta = load_meta(Path(args.data_dir))
+    model = GPTConfig(
+        vocab_size=meta["vocab_size"],
+        n_layer=args.n_layer,
+        n_head=args.n_head,
+        d_model=args.d_model,
+        block_size=args.block_size,
+        dropout=args.dropout,
+        pos_encoding=args.pos_encoding,
+        norm_placement=args.norm_placement,
+        pos_capacity=args.pos_capacity,
+    )
+    return TrainConfig(
+        model=model,
+        data_dir=args.data_dir,
+        out_dir=args.out_dir,
+        run_name=args.run_name,
+        token_budget=args.token_budget,
+        batch_size=args.batch_size,
+        grad_accum=args.grad_accum,
+        lr=args.lr,
+        warmup_fraction=args.warmup_fraction,
+        eval_interval_tokens=args.eval_interval_tokens,
+        eval_batches=args.eval_batches,
+        seed=args.seed,
+        device=args.device,
+        log_wandb=args.wandb,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+
+    model_args = parser.add_argument_group("model")
+    model_args.add_argument("--n-layer", type=int, default=6)
+    model_args.add_argument("--n-head", type=int, default=6)
+    model_args.add_argument("--d-model", type=int, default=384)
+    model_args.add_argument("--block-size", type=int, default=256)
+    model_args.add_argument("--dropout", type=float, default=0.0)
+    model_args.add_argument(
+        "--pos-encoding", choices=["learned", "sinusoidal", "rope"], default="learned"
+    )
+    model_args.add_argument("--norm-placement", choices=["pre", "post"], default="pre")
+    model_args.add_argument(
+        "--pos-capacity", type=int, default=None, help="positions to allocate; see study A2"
+    )
+
+    train_args = parser.add_argument_group("training")
+    train_args.add_argument("--token-budget", type=int, default=50_000_000)
+    train_args.add_argument("--batch-size", type=int, default=32)
+    train_args.add_argument("--grad-accum", type=int, default=1)
+    train_args.add_argument("--lr", type=float, default=6e-4)
+    train_args.add_argument("--warmup-fraction", type=float, default=0.02)
+    train_args.add_argument("--eval-interval-tokens", type=int, default=2_000_000)
+    train_args.add_argument("--eval-batches", type=int, default=40)
+    train_args.add_argument("--seed", type=int, default=0)
+
+    run_args = parser.add_argument_group("run")
+    run_args.add_argument("--data-dir", type=Path, default=Path("data"))
+    run_args.add_argument("--out-dir", type=Path, default=Path("runs"))
+    run_args.add_argument("--run-name", default=None)
+    run_args.add_argument("--device", default=None)
+    run_args.add_argument("--wandb", action="store_true", help="optional; JSONL stays canonical")
+    run_args.add_argument(
+        "--no-resume", action="store_true", help="ignore any checkpoint in the run directory"
+    )
+
+    args = parser.parse_args(argv)
+    cfg = build_config(args)
+
+    print(f"run:    {cfg.run_dir()}")
+    print(f"model:  {cfg.model.n_layer}L/{cfg.model.n_head}H/{cfg.model.d_model}d, ", end="")
+    print(f"{cfg.model.pos_encoding}, {cfg.model.norm_placement}-norm")
+    print(f"budget: {cfg.token_budget:,} tokens, {cfg.tokens_per_step:,} per step")
+
+    record = train(cfg, resume=not args.no_resume)
+    print(json.dumps(record, indent=2))
+    return 0 if record.get("status") == "completed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
