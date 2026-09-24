@@ -1,6 +1,6 @@
 # PLAN — transformer-ablations
 
-**Status:** draft, awaiting Daniel's sign-off
+**Status:** signed off 2026-09-24
 **Drafted:** 2026-09-24
 **Target:** complete by 2026-10-15, ahead of the October–November application wave.
 
@@ -12,15 +12,20 @@ leaves `main` working. Nothing merges without tests passing.
 Three unknowns that can move the plan. All are probed in week 1 rather than discovered in
 week 3.
 
-| Risk | Impact | When we find out | Mitigation |
+| Risk | Impact | Status | Resolution |
 |---|---|---|---|
-| **MPS throughput unknown** | Sets every token budget and the whole sweep schedule | M3, day 5 | Budgets in DESIGN §7 are provisional and get rewritten from measured tokens/sec. If throughput is bad, shrink `d_model` to 256 and the sweep budget to 25M tokens before shrinking the number of seeds. |
-| **MPS operator gaps or numerical quirks** | Could force CPU (far too slow) or CUDA | M2, day 3 | Spike first (below). Fallback is a borrowed CUDA box for the flagship run; ablations stay local. |
-| **Post-norm may diverge, not merely underperform** | A1's chart becomes a divergence story | M6 | Already designed for: a NaN run is recorded as `FAILED` with its last good loss. Divergence *is* the finding — the writeup frames it that way. |
+| ~~**MPS throughput unknown**~~ | Sets every token budget and the sweep schedule | **Closed 2026-09-24** | Measured 23,500 tok/s at the planned config. The 50M-token sweep budget holds — 35 min/run, inside the 45-min ceiling. Full sweep ~16 h, flagship 2.4 h, ~18.5 h total. No shrink needed; the `d256` fallback is unnecessary. |
+| ~~**MPS operator gaps or numerical quirks**~~ | Could force CPU (far too slow) or CUDA | **Closed 2026-09-24** | Every op the design needs passed: SDPA, complex64 multiply for RoPE, bf16/fp16 autocast, `cross_entropy`, `clip_grad_norm_`, `multinomial`. No CUDA fallback required. |
+| **Post-norm may diverge, not merely underperform** | A1's chart becomes a divergence story | Open until M6 | Already designed for: a NaN run is recorded as `FAILED` with its last good loss. Divergence *is* the finding — the writeup frames it that way. |
 
-**Spike, day 1 (throwaway, not merged):** 30 lines — build a tiny transformer on MPS, run
-100 steps, print tokens/sec and peak memory. Answers the first two risks before any
-architecture is committed. Lives in `spikes/`, gitignored, deleted after.
+**Day-1 spike: done.** Lived in `spikes/` (gitignored), probed ten ops and benchmarked
+five configs. Both compute risks closed before any architecture was committed, which was
+the point. Measured numbers are in DESIGN §5.1 and §7. Two incidental findings: batch 64
+buys ~2% throughput for 68% more memory, so batch 32 is the setting; and the 12-head A3
+condition costs only 10%, so that study is cheap.
+
+The spike measured speed only — it trains on one fixed random batch and validates nothing
+about correctness. M2 is where correctness gets established.
 
 ---
 
@@ -84,9 +89,11 @@ checkpoint save/resume with RNG state, JSONL metrics, provenance capture, NaN ab
 logits and optimizer state; resume reproduces an uninterrupted loss curve; same seed
 reproduces the same loss sequence; a deliberately broken LR triggers the NaN abort path.
 
-**Gate:** **measured tokens/sec and peak memory reported in the PR.** Token budgets in
-DESIGN §7 get updated from real numbers here, and DESIGN.md is edited in the same PR.
-This is the plan's main decision point.
+**Gate:** throughput of the *real* training loop reported in the PR and compared against
+the spike's 23,500 tok/s. The spike measured a stripped-down loop; if the real one is
+materially slower, the gap is explained before proceeding rather than absorbed silently
+into the schedule. Budgets in DESIGN §7 are already set from measurement, so this is a
+confirmation, not a decision.
 
 ---
 

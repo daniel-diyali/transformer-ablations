@@ -4,10 +4,10 @@ A GPT-style decoder-only transformer implemented from scratch in PyTorch, traine
 roughly 14M parameters, used to run **controlled ablations on architectural choices** —
 with multiple seeds per condition and variance reported honestly.
 
-> **Status: planning complete, implementation starting.**
-> The design is signed off and the milestones are laid out. No trained results yet.
-> This section gets replaced with findings and charts as they land — see
-> [PLAN.md](PLAN.md) for exactly where the project is.
+> **Status: scaffolding done, model not yet written.**
+> Design signed off, environment and CI green, throughput measured on the target
+> hardware. No trained results yet. This section gets replaced with findings and charts
+> as they land — see [PLAN.md](PLAN.md) for exactly where the project is.
 
 ## What this is
 
@@ -51,8 +51,38 @@ presence would undercut the claim the project exists to make.
 - [PLAN.md](PLAN.md) — milestones, risk register, sequence
 - [NOTES.md](NOTES.md) — decisions and why they were made
 
+## Setup
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv venv --python 3.11 && uv pip install -e ".[dev]"
+uv run pytest        # 6 environment smoke tests, ~1s
+uv run ruff check .
+```
+
+The smoke tests assert what this README claims about the environment — the Python and
+torch floors, and the presence of the ops the model depends on — so a mismatch fails in
+a second rather than forty minutes into a training run.
+
+## Measured cost
+
+Day-one benchmark on the target hardware, torch 2.14.0, fp32, explicit attention:
+
+| | |
+|---|---|
+| Throughput | **23,500 tok/s** at d384 / L6 / H6, batch 32 |
+| Peak memory | 3.5 GB of 24 GB available |
+| One ablation run (50M tokens) | 35 minutes |
+| Full 27-run sweep | ~16 hours |
+| Flagship run (200M tokens) | 2.4 hours |
+| **Total project compute** | **~18.5 hours**, all overnight |
+
+Every op the design needs runs on MPS, including complex64 multiply for RoPE and both
+autocast dtypes. No CUDA fallback is required.
+
 ## Reproduction
 
-Setup and reproduction commands land with the first trained run. Every figure in the
-final writeup will be reproducible from a clean clone, with honest hardware and
-wall-clock costs stated.
+Commands for regenerating each figure land with the runs that produce them. Every figure
+in the final writeup will be reproducible from a clean clone, with the hardware and
+wall-clock cost stated honestly rather than omitted.

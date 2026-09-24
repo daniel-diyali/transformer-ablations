@@ -1,0 +1,64 @@
+[project]
+name = "minigpt-ablations"
+version = "0.1.0"
+description = "A GPT-style decoder built from scratch in PyTorch, with controlled multi-seed ablations"
+requires-python = ">=3.11"
+
+# Lower bounds are the versions this was developed and measured against.
+# Upper bounds are deliberately absent: this is a research repo, not a library,
+# and the lockfile is what pins exact versions for reproduction.
+dependencies = [
+    "torch>=2.14.0",
+    "numpy>=2.4.6",
+    "tokenizers>=0.23.2",   # BPE only; the model and training loop are hand-written
+    "datasets>=5.0.1",      # corpus fetch only, never in the training loop
+    "matplotlib>=3.11.2",
+]
+
+[project.optional-dependencies]
+# Optional logging backend. JSONL remains the source of truth, so the repo
+# works fully with no account and no network.
+wandb = ["wandb>=0.19"]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["minigpt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q keeps output readable; --strict-markers turns a typo'd marker into an
+# error rather than a silently skipped test.
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# spikes/ holds throwaway prototypes: deliberately unpolished, never merged.
+# *.md is excluded because ruff formats Python inside fenced blocks, and the
+# design docs align their snippets for reading rather than to a formatter.
+extend-exclude = ["spikes", "*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes — unused imports and names
+    "I",        # import sorting
+    "B",        # bugbear — mutable defaults, silently-wrong comparisons
+    "UP",       # pyupgrade
+    "SIM",      # simplification
+    "RUF",
+]
+ignore = [
+    "E741",     # ambiguous names: q, k, v, l, B, T, C are the vocabulary of this domain
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on magic numbers by design — that is what a specification looks like.
+"tests/*" = ["E501"]

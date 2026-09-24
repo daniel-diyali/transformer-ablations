@@ -1,6 +1,6 @@
 # DESIGN — transformer-ablations
 
-**Status:** draft, awaiting Daniel's sign-off
+**Status:** signed off 2026-09-24
 **Drafted:** 2026-09-24
 **Satisfies:** REQUIREMENTS.md
 
@@ -26,12 +26,16 @@ the analysis work, and charts can be regenerated without retraining.
 
 ## 2. Components
 
-### 2.1 `data/` — corpus to tokens
+All code lives in the `minigpt/` package. Corpus and run artifacts live in `data/` and
+`runs/` at the repo root, both gitignored — the package and the artifacts are kept apart
+so a module name never collides with a directory full of `.bin` files.
+
+### 2.1 `minigpt/data.py` — corpus to tokens
 
 Responsibility: turn raw text into a flat token array, once.
 
-- `build_tokenizer.py` — trains BPE on a corpus sample, writes `tokenizer.json`.
-- `prepare.py` — streams the corpus, encodes, appends to a `uint16` binary.
+- `build_tokenizer` — trains BPE on a corpus sample, writes `tokenizer.json`.
+- `prepare` — streams the corpus, encodes, appends to a `uint16` binary.
   Writes `train.bin`, `val.bin`, and `meta.json` (vocab size, token counts, tokenizer
   hash, split seed).
 
@@ -43,7 +47,7 @@ to the loss.
 The split is by document, not by token offset, so validation text never appears as a
 training-sequence suffix.
 
-### 2.2 `model/` — the transformer
+### 2.2 `minigpt/model.py` — the transformer
 
 Responsibility: the architecture, and nothing else. No I/O, no logging, no globals.
 
@@ -79,7 +83,7 @@ softmax, weighted sum, output projection — because the point of the project is
 the mechanism. A flag may route to `F.scaled_dot_product_attention` **only** as a speed
 comparison and a numerical-equivalence test target, never as the default path.
 
-### 2.3 `train/` — the training loop
+### 2.3 `minigpt/train.py` — the training loop
 
 Responsibility: turn a config into a trained checkpoint and a metrics file.
 
@@ -93,7 +97,7 @@ AdamW with two parameter groups: weight decay applies to matrices, not to biases
 layer-norm parameters. Applying decay to norm gains is a common quiet bug that shifts
 results.
 
-### 2.4 `experiments/` — the sweep runner
+### 2.4 `minigpt/experiments.py` — the sweep runner
 
 Responsibility: expand a study definition into runs, execute them, skip completed ones.
 
@@ -114,7 +118,7 @@ Study(
 Run identity is `hash(config + seed)`. A run whose directory contains a `DONE` marker is
 skipped, which makes an interrupted overnight sweep resumable without bookkeeping.
 
-### 2.5 `analysis/` — results to figures
+### 2.5 `minigpt/analysis.py` — results to figures
 
 Responsibility: read run directories, emit charts and tables. Pure post-processing.
 
@@ -172,8 +176,28 @@ of comparable runs*, not speed of one run. 24 GB of unified memory comfortably h
 14M-parameter model. Writing for `cuda|mps|cpu` from the start costs nothing and leaves
 the door open to burst a longer flagship run onto a borrowed GPU later.
 
-Throughput numbers below are estimates. Milestone 2 measures actual tokens/sec and the
-token budgets get right-sized then — stated as a plan, not a guess dressed as a fact.
+**Confirmed by measurement (2026-09-24, day-1 spike).** torch 2.14.0, M4 Pro, fp32,
+explicit attention, 40 timed steps after warmup:
+
+| Config | Params | Throughput | ms/step | Peak mem |
+|---|---|---|---|---|
+| Planned d384 / L6 / H6, batch 32 | 13.9M | 23,500 tok/s | 349 | 3.5 GB |
+| Same, batch 64 | 13.9M | 23,900 tok/s | 684 | 5.9 GB |
+| A3 worst case, H12 | 13.9M | 21,200 tok/s | 387 | 3.8 GB |
+| A2 long-context eval, 512 ctx | 14.0M | 20,700 tok/s | 396 | 3.8 GB |
+| Fallback d256 / H8 | 6.9M | 36,500 tok/s | 224 | 3.6 GB |
+
+Batch 64 buys ~2% throughput for 68% more memory, so **batch 32 is the setting** —
+the device is already saturated at 32. The 12-head condition costs only 10%, so A3 is
+cheap. Memory peaks at 3.5 GB against 24 GB available, leaving ample headroom.
+
+Every op the design depends on passed on MPS: `scaled_dot_product_attention` (needed as
+the equivalence-test target), complex64 multiply (the RoPE complex formulation),
+bf16 and fp16 autocast, `cross_entropy`, `clip_grad_norm_`, and `multinomial`. The
+fallback config exists only as insurance and is not needed.
+
+The spike measured *speed only*. It trains on one fixed random batch and says nothing
+about correctness — that is M2's job.
 
 ### 5.2 Tokenizer
 
@@ -246,16 +270,26 @@ than claiming universality.
 | Layers / heads / `d_model` | 6 / 6 / 384 |
 | Context | 256 |
 | Vocab | 8,192 |
+| Batch size | 32 (measured: the device saturates here) |
 | Parameters | ≈ 13.9M (≈ 10.7M non-embedding) |
-| Token budget | 50M (provisional — set after measuring throughput) |
+| Token budget | **50M — confirmed, not provisional** |
+
+At the measured 23,500 tok/s, a 50M-token run takes **35 minutes**, inside the 45-minute
+NFR3 ceiling. The full 27-run sweep is **~16 hours**, which is two overnight sessions.
 
 **Flagship config** — same architecture at the best-performing settings, trained on a
-~200M-token budget for the headline loss curve and the text samples. Roughly
-Chinchilla-adjacent for this size; the sweep runs are deliberately under-trained, which
-is fine for comparison but is a caveat worth stating.
+200M-token budget: **2.4 hours**. Roughly Chinchilla-adjacent for this size; the sweep
+runs are deliberately under-trained, which is fine for comparison but is a caveat worth
+stating.
+
+Total project compute is therefore about **18.5 hours**, all of it overnight.
 
 Batch shape is chosen to hold tokens-per-step constant across conditions, using gradient
 accumulation to absorb any memory differences.
+
+Not yet measured: whether bf16 autocast beats fp32 on MPS. It runs, but the throughput
+gain is unknown and MPS gains are often modest. Treated as an optional M3 optimization,
+never as a correctness-affecting change mid-sweep.
 
 ## 8. Dependencies
 
