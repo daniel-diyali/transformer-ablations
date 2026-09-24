@@ -1,6 +1,6 @@
 # DESIGN — transformer-ablations
 
-**Status:** draft, awaiting Daniel's sign-off
+**Status:** signed off 2026-09-24
 **Drafted:** 2026-09-24
 **Satisfies:** REQUIREMENTS.md
 

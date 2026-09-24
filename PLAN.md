@@ -1,6 +1,6 @@
 # PLAN — transformer-ablations
 
-**Status:** draft, awaiting Daniel's sign-off
+**Status:** signed off 2026-09-24
 **Drafted:** 2026-09-24
 **Target:** complete by 2026-10-15, ahead of the October–November application wave.
 

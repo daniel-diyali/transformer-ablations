@@ -1,6 +1,6 @@
 # REQUIREMENTS — transformer-ablations
 
-**Status:** draft, awaiting Daniel's sign-off
+**Status:** signed off 2026-09-24
 **Owner:** Daniel Diyali
 **Drafted:** 2026-09-24
 
@@ -83,8 +83,9 @@ advances the AI safety self-study rather than competing with it.
 
 ### FR5 — Ablations
 
-At minimum three ablation studies, each stating a hypothesis before the run and
-reporting whether the data supported it. Candidate set (final selection in DESIGN.md):
+Three ablation studies, each stating a hypothesis before the run and reporting whether
+the data supported it. FR5.1-5.3 are confirmed; FR5.4 is a stretch goal. Hypotheses and
+reasoning are in DESIGN §6.
 
 - FR5.1 Layer-norm placement: pre-norm vs post-norm.
 - FR5.2 Positional encoding: learned vs sinusoidal vs rotary (RoPE), including behavior
@@ -129,13 +130,14 @@ reporting whether the data supported it. Candidate set (final selection in DESIG
 
 ## 6. Assumptions
 
-Each of these is a question in disguise. Flagged for review.
+Each of these was a question in disguise. Resolved at sign-off; A2 later confirmed by
+measurement rather than left as an assumption.
 
 - **A1** Summer 2027 internship applications are the deadline driver, so shipping a
   complete, documented result in ~3 weeks outranks pushing the model's quality further.
-- **A2** Local MPS training is preferable to free Colab/Kaggle GPUs, because the
-  ablations need many comparable runs and free-tier session limits make long sweeps
-  unreliable. Trading raw throughput for uninterrupted, unlimited local runs.
+- **A2** ~~Assumption~~ **confirmed by measurement 2026-09-24.** Local MPS runs at
+  23,500 tok/s on the planned config, putting a sweep run at 35 minutes and the whole
+  project at ~18.5 hours of overnight compute. No CUDA fallback needed. See DESIGN §5.1.
 - **A3** TinyStories is the right corpus: small enough to train on quickly, simple enough
   that a ~14M-parameter model produces genuinely coherent English — which makes the
   qualitative samples compelling rather than embarrassing.
