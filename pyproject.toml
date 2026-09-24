@@ -31,6 +31,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["minigpt*"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q keeps output readable; --strict-markers turns a typo'd marker into an
+# error rather than a silently skipped test.
+addopts = "-q --strict-markers"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
