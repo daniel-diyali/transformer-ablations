@@ -1,0 +1,32 @@
+[project]
+name = "minigpt-ablations"
+version = "0.1.0"
+description = "A GPT-style decoder built from scratch in PyTorch, with controlled multi-seed ablations"
+requires-python = ">=3.11"
+
+# Lower bounds are the versions this was developed and measured against.
+# Upper bounds are deliberately absent: this is a research repo, not a library,
+# and the lockfile is what pins exact versions for reproduction.
+dependencies = [
+    "torch>=2.14.0",
+    "numpy>=2.4.6",
+    "tokenizers>=0.23.2",   # BPE only; the model and training loop are hand-written
+    "datasets>=5.0.1",      # corpus fetch only, never in the training loop
+    "matplotlib>=3.11.2",
+]
+
+[project.optional-dependencies]
+# Optional logging backend. JSONL remains the source of truth, so the repo
+# works fully with no account and no network.
+wandb = ["wandb>=0.19"]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["minigpt*"]

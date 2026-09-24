@@ -26,12 +26,16 @@ the analysis work, and charts can be regenerated without retraining.
 
 ## 2. Components
 
-### 2.1 `data/` — corpus to tokens
+All code lives in the `minigpt/` package. Corpus and run artifacts live in `data/` and
+`runs/` at the repo root, both gitignored — the package and the artifacts are kept apart
+so a module name never collides with a directory full of `.bin` files.
+
+### 2.1 `minigpt/data.py` — corpus to tokens
 
 Responsibility: turn raw text into a flat token array, once.
 
-- `build_tokenizer.py` — trains BPE on a corpus sample, writes `tokenizer.json`.
-- `prepare.py` — streams the corpus, encodes, appends to a `uint16` binary.
+- `build_tokenizer` — trains BPE on a corpus sample, writes `tokenizer.json`.
+- `prepare` — streams the corpus, encodes, appends to a `uint16` binary.
   Writes `train.bin`, `val.bin`, and `meta.json` (vocab size, token counts, tokenizer
   hash, split seed).
 
@@ -43,7 +47,7 @@ to the loss.
 The split is by document, not by token offset, so validation text never appears as a
 training-sequence suffix.
 
-### 2.2 `model/` — the transformer
+### 2.2 `minigpt/model.py` — the transformer
 
 Responsibility: the architecture, and nothing else. No I/O, no logging, no globals.
 
@@ -79,7 +83,7 @@ softmax, weighted sum, output projection — because the point of the project is
 the mechanism. A flag may route to `F.scaled_dot_product_attention` **only** as a speed
 comparison and a numerical-equivalence test target, never as the default path.
 
-### 2.3 `train/` — the training loop
+### 2.3 `minigpt/train.py` — the training loop
 
 Responsibility: turn a config into a trained checkpoint and a metrics file.
 
@@ -93,7 +97,7 @@ AdamW with two parameter groups: weight decay applies to matrices, not to biases
 layer-norm parameters. Applying decay to norm gains is a common quiet bug that shifts
 results.
 
-### 2.4 `experiments/` — the sweep runner
+### 2.4 `minigpt/experiments.py` — the sweep runner
 
 Responsibility: expand a study definition into runs, execute them, skip completed ones.
 
@@ -114,7 +118,7 @@ Study(
 Run identity is `hash(config + seed)`. A run whose directory contains a `DONE` marker is
 skipped, which makes an interrupted overnight sweep resumable without bookkeeping.
 
-### 2.5 `analysis/` — results to figures
+### 2.5 `minigpt/analysis.py` — results to figures
 
 Responsibility: read run directories, emit charts and tables. Pure post-processing.
 
