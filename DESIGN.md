@@ -287,8 +287,22 @@ embeddings are not, because weight tying means that matrix is also the output he
 is therefore doing work at every position. An earlier draft said 10.7M by subtracting the
 token embedding too; the figure above is measured from the built model.
 
-At the measured 23,500 tok/s, a 50M-token run takes **35 minutes**, inside the 45-minute
-NFR3 ceiling. The full 27-run sweep is **~16 hours**, which is two overnight sessions.
+**Confirmed against the real training loop (M3, 2026-09-24).** The loop sustains
+**23,542 tok/s** — the spike's 23,500 was accurate, and none of the loop machinery
+(batch gathering, clipping, scheduling, `loss.item()`) costs measurable throughput.
+`get_batch` is 1 ms of a 348 ms step.
+
+Wall-clock per run adds evaluation and checkpointing on top of that:
+
+| | |
+|---|---|
+| Training, 50M tokens | 35.4 min |
+| 25 evaluations (40 batches each, 4.73 s) | 2.0 min |
+| 25 checkpoint saves (0.11 s each) | negligible |
+| **Total per sweep run** | **37.4 min** (ceiling 45) |
+
+Full 27-run sweep **16.8 h**, flagship **2.5 h**, **~19.3 h total** — two or three
+overnight sessions.
 
 **Flagship config** — same architecture at the best-performing settings, trained on a
 200M-token budget: **2.4 hours**. Roughly Chinchilla-adjacent for this size; the sweep

@@ -4,11 +4,11 @@ A GPT-style decoder-only transformer implemented from scratch in PyTorch, traine
 roughly 14M parameters, used to run **controlled ablations on architectural choices** —
 with multiple seeds per condition and variance reported honestly.
 
-> **Status: model implemented and verified, not yet trained.**
-> Attention is checked against PyTorch's fused kernel to 1e-12 and causality is tested
-> by perturbation. 83 tests, ~1.5s. No loss curves yet — training lands next. This
-> section gets replaced with findings and charts as they arrive; see
-> [PLAN.md](PLAN.md) for where the project is.
+> **Status: training works; the ablation sweep has not run yet.**
+> Model verified against PyTorch's fused kernel to 1e-12, training loop sustains
+> 23,542 tok/s on an M4 Pro, loss falls from 9.05 to 3.82 in 2M tokens. 111 tests, ~7s.
+> No ablation results yet. This section gets replaced with findings and charts as they
+> arrive; see [PLAN.md](PLAN.md) for where the project is.
 
 ## What this is
 
@@ -68,6 +68,17 @@ Build the corpus (downloads ~1 GB, takes about 2 minutes):
 uv run python -m minigpt.data prepare
 uv run python -m minigpt.data inspect   # metadata plus a decoded sample
 ```
+
+Train a model:
+
+```bash
+uv run python -m minigpt.train --token-budget 2000000 --run-name first
+uv run python -m minigpt.train --pos-encoding rope --norm-placement post
+```
+
+Runs are budgeted in tokens, not epochs, so two conditions with different batch shapes
+still see identical data. Each run writes `metrics.jsonl`, `config.json` with provenance,
+and a checkpoint into `runs/<name>/`; a completed run is skipped rather than redone.
 
 That produces **466.8M training tokens and 4.7M validation tokens** at vocab 8,192 —
 4.12 characters per token. A 50M-token ablation run sees 10.7% of the corpus and the

@@ -160,3 +160,40 @@ pretending otherwise.
 
 M3, the training loop, on `feat/training-loop`. Its gate compares real throughput against
 the spike's 23,500 tok/s.
+
+## 2026-09-24 — M3 training loop
+
+**Gate passed, but the first measurement misled me.** End-to-end `train()` reported
+20,634 tok/s against the spike's 23,500, a 12% gap. Two wrong hypotheses before the right
+answer:
+
+1. *`get_batch` is slow* — no. 1.0 ms out of a 348 ms step. Negligible.
+2. *`loss.item()` forces a GPU sync every step* — plausible, and wrong. Measured with and
+   without: 23,542 vs 23,526 tok/s. No cost on MPS at this size.
+
+The isolated loop, including batch gathering, clipping and `.item()`, runs at
+**23,542 tok/s** — the spike was accurate. The gap is entirely evaluation (4.73 s per
+eval of 40 batches), checkpointing (0.11 s), and startup amortised over a short run. A
+50M-token sweep run with default settings projects to **37.4 min**, inside the ceiling.
+
+Lesson worth keeping: a cumulative `tokens/s` over a short run is dominated by fixed
+startup cost. The 1.5M-token run looked *slower* than the 2M one for that reason alone.
+Measure steady state, not averages over short runs.
+
+**Resuming with a changed token budget is refused, and that is correct.** I wrote a test
+assuming a run could be extended; it failed. The LR schedule is keyed to the budget, so a
+run resumed under a different budget follows a curve matching neither. The config-equality
+check catches it. Test now asserts the refusal and explains why.
+
+**Evaluation uses a fixed seed** so every eval, in every run, scores identical validation
+batches. A moving eval set would inject run-to-run noise indistinguishable from a real
+difference between conditions — the one error this project cannot absorb.
+
+**W&B is wired in behind `--wandb`** (Q3). Nothing downstream reads it; JSONL stays
+canonical, so a missing account costs a run nothing but a dashboard.
+
+### Next step
+
+M4, baseline run, on `feat/baseline-run`: train the sweep config to its full 50M budget,
+produce the first real loss curve and text samples. First artifact that is resume-legible
+on its own.

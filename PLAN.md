@@ -89,11 +89,10 @@ checkpoint save/resume with RNG state, JSONL metrics, provenance capture, NaN ab
 logits and optimizer state; resume reproduces an uninterrupted loss curve; same seed
 reproduces the same loss sequence; a deliberately broken LR triggers the NaN abort path.
 
-**Gate:** throughput of the *real* training loop reported in the PR and compared against
-the spike's 23,500 tok/s. The spike measured a stripped-down loop; if the real one is
-materially slower, the gap is explained before proceeding rather than absorbed silently
-into the schedule. Budgets in DESIGN §7 are already set from measurement, so this is a
-confirmation, not a decision.
+**Gate: passed.** The real loop sustains **23,542 tok/s** against the spike's 23,500 —
+no measurable regression. End-to-end wall clock is lower (~20.6k tok/s) purely because of
+evaluation, checkpointing and startup, and a 50M-token sweep run projects to **37.4 min**,
+inside the 45-minute ceiling. Numbers in DESIGN §5.1 and §7.
 
 ---
 
