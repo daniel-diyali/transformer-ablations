@@ -53,8 +53,38 @@ Consequence worth recording: because the repo is public from commit one, the git
 is part of the artifact. Branch names, commit messages, and PR descriptions are readable
 by anyone evaluating the project, so they get the same care as the code.
 
+## 2026-09-24 — Day-1 spike: both compute risks closed
+
+Ran the throwaway spike before touching any architecture. torch 2.14.0, MPS live.
+
+**Throughput: 23,500 tok/s** at the planned config (d384/L6/H6, batch 32, fp32, explicit
+attention), 349 ms/step, 3.5 GB peak against 24 GB available.
+
+The consequence that matters: the 50M-token sweep budget in DESIGN §7 was an estimate,
+and the measurement says it holds. 35 minutes per run, under the 45-minute ceiling.
+Full 27-run sweep ~16 h, flagship 2.4 h, ~18.5 h total — two or three overnight sessions.
+No need to shrink `d_model`, and the `d256` fallback config is dead.
+
+**No MPS operator gaps.** All ten probed ops passed, including complex64 multiply (so the
+complex RoPE formulation is available, not just the real-valued one) and both bf16 and
+fp16 autocast. No CUDA fallback needed for any milestone.
+
+Two incidental findings worth keeping:
+
+- **Batch 32 is the setting.** Batch 64 gave 23,900 vs 23,500 tok/s — 2% more throughput
+  for 68% more memory. The device is already saturated at 32.
+- **A3 is cheap.** The 12-head condition runs only 10% slower than 6 heads, so the head
+  count study costs almost nothing beyond its run count.
+
+Not measured: whether bf16 autocast actually beats fp32 here. It runs, but MPS gains are
+often modest. Logged as an optional M3 optimization, never to be switched on mid-sweep
+where it could confound a comparison.
+
+The spike validates **speed only** — it trains on one fixed random batch, and its loss
+climbing to ~30 is meaningless noise rather than a signal. Correctness is M2's job. Worth
+stating plainly so nobody later mistakes a throughput spike for a working model.
+
 ### Next step
 
-Day-1 throughput spike (throwaway, `spikes/`, not merged) to measure MPS tokens/sec and
-peak memory and to surface any MPS operator gaps. Its numbers set the token budgets in
-DESIGN §7, which currently hold estimates rather than measurements. Then M0 scaffold.
+M0 scaffold on `chore/scaffold`: pyproject with pinned deps, ruff, pytest, CI. Committed
+in parts per the new version-control rule.

@@ -172,8 +172,28 @@ of comparable runs*, not speed of one run. 24 GB of unified memory comfortably h
 14M-parameter model. Writing for `cuda|mps|cpu` from the start costs nothing and leaves
 the door open to burst a longer flagship run onto a borrowed GPU later.
 
-Throughput numbers below are estimates. Milestone 2 measures actual tokens/sec and the
-token budgets get right-sized then — stated as a plan, not a guess dressed as a fact.
+**Confirmed by measurement (2026-09-24, day-1 spike).** torch 2.14.0, M4 Pro, fp32,
+explicit attention, 40 timed steps after warmup:
+
+| Config | Params | Throughput | ms/step | Peak mem |
+|---|---|---|---|---|
+| Planned d384 / L6 / H6, batch 32 | 13.9M | 23,500 tok/s | 349 | 3.5 GB |
+| Same, batch 64 | 13.9M | 23,900 tok/s | 684 | 5.9 GB |
+| A3 worst case, H12 | 13.9M | 21,200 tok/s | 387 | 3.8 GB |
+| A2 long-context eval, 512 ctx | 14.0M | 20,700 tok/s | 396 | 3.8 GB |
+| Fallback d256 / H8 | 6.9M | 36,500 tok/s | 224 | 3.6 GB |
+
+Batch 64 buys ~2% throughput for 68% more memory, so **batch 32 is the setting** —
+the device is already saturated at 32. The 12-head condition costs only 10%, so A3 is
+cheap. Memory peaks at 3.5 GB against 24 GB available, leaving ample headroom.
+
+Every op the design depends on passed on MPS: `scaled_dot_product_attention` (needed as
+the equivalence-test target), complex64 multiply (the RoPE complex formulation),
+bf16 and fp16 autocast, `cross_entropy`, `clip_grad_norm_`, and `multinomial`. The
+fallback config exists only as insurance and is not needed.
+
+The spike measured *speed only*. It trains on one fixed random batch and says nothing
+about correctness — that is M2's job.
 
 ### 5.2 Tokenizer
 
@@ -246,16 +266,26 @@ than claiming universality.
 | Layers / heads / `d_model` | 6 / 6 / 384 |
 | Context | 256 |
 | Vocab | 8,192 |
+| Batch size | 32 (measured: the device saturates here) |
 | Parameters | ≈ 13.9M (≈ 10.7M non-embedding) |
-| Token budget | 50M (provisional — set after measuring throughput) |
+| Token budget | **50M — confirmed, not provisional** |
+
+At the measured 23,500 tok/s, a 50M-token run takes **35 minutes**, inside the 45-minute
+NFR3 ceiling. The full 27-run sweep is **~16 hours**, which is two overnight sessions.
 
 **Flagship config** — same architecture at the best-performing settings, trained on a
-~200M-token budget for the headline loss curve and the text samples. Roughly
-Chinchilla-adjacent for this size; the sweep runs are deliberately under-trained, which
-is fine for comparison but is a caveat worth stating.
+200M-token budget: **2.4 hours**. Roughly Chinchilla-adjacent for this size; the sweep
+runs are deliberately under-trained, which is fine for comparison but is a caveat worth
+stating.
+
+Total project compute is therefore about **18.5 hours**, all of it overnight.
 
 Batch shape is chosen to hold tokens-per-step constant across conditions, using gradient
 accumulation to absorb any memory differences.
+
+Not yet measured: whether bf16 autocast beats fp32 on MPS. It runs, but the throughput
+gain is unknown and MPS gains are often modest. Treated as an optional M3 optimization,
+never as a correctness-affecting change mid-sweep.
 
 ## 8. Dependencies
 
