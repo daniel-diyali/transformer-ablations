@@ -349,3 +349,42 @@ class GPT(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
         return logits, loss
+
+    @torch.no_grad()
+    def generate(
+        self,
+        idx: Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+    ) -> Tensor:
+        """Extend `idx` one token at a time.
+
+        The context is cropped to `block_size` before each step, so generation
+        never runs longer than the model was trained on. `temperature=0` means
+        greedy: take the most likely token rather than sampling.
+        """
+        if temperature < 0:
+            raise ValueError(f"temperature must be non-negative, got {temperature}")
+
+        was_training = self.training
+        self.eval()
+        try:
+            for _ in range(max_new_tokens):
+                context = idx[:, -self.cfg.block_size :]
+                logits, _ = self(context)
+                logits = logits[:, -1, :]
+
+                if temperature == 0:
+                    next_token = logits.argmax(dim=-1, keepdim=True)
+                else:
+                    logits = logits / temperature
+                    if top_k is not None:
+                        kth = logits.topk(min(top_k, logits.size(-1)), dim=-1).values[:, [-1]]
+                        logits = logits.masked_fill(logits < kth, float("-inf"))
+                    next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1)
+
+                idx = torch.cat([idx, next_token], dim=1)
+        finally:
+            self.train(was_training)
+        return idx
