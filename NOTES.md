@@ -120,3 +120,43 @@ error message pass a test.
 M2, the model, on `feat/gpt-model`. The correctness milestone: attention must match
 `F.scaled_dot_product_attention` numerically, and causality is tested by perturbation
 rather than by inspecting the mask.
+
+## 2026-09-24 — M2 model
+
+**Attention is a pure function, not a method.** `causal_attention(q, k, v)` sits outside
+the module so the equivalence test can target it directly. That keeps the fast path out
+of the model entirely — no config flag existing only for testing, and no chance a run
+silently takes a different code path than the one under study. DESIGN §2.2 allowed a flag
+routing to SDPA; this is strictly better and the flag was never added.
+
+**Loss at init caught a real subtlety.** The first version of the test passed the input
+as its own target and scored 4.26 against a ln(128)=4.85 baseline. The model was fine;
+the test was asking it to predict the *current* token, which weight tying already solves
+at initialisation — the residual stream carries the token embedding and the tied head
+scores it against itself. RoPE showed the effect most strongly because it is the only
+encoding that does not dilute the residual stream with an added position vector.
+
+Worth remembering as an interview answer: weight tying plus a copying objective is a
+shortcut, and the three positional encodings differ in how much they obscure it.
+
+**Parameter count convention.** `num_params(non_embedding=True)` subtracts position
+embeddings but not token embeddings, following nanoGPT, because weight tying means that
+matrix is also the output head. An earlier DESIGN draft said 10.7M by subtracting the
+token embedding too. Measured figure is 13.89M total, 13.79M non-embedding, and the
+design now states the convention rather than just a number.
+
+**pos_capacity settles an A2 question the plan left open.** A learned-encoding model
+cannot run beyond its position table at all. Rather than error out and leave the
+long-context arm with no data point, `pos_capacity` above `block_size` allocates
+embeddings that training never reaches, so evaluation past the training context measures
+exactly what untrained position embeddings do. That *is* the finding, and it is honest.
+
+Note for A2's writeup: the three encodings cannot have identical parameter counts —
+sinusoidal and RoPE have zero position parameters, learned has `n_positions * d_model`.
+Unlike A1 and A3, A2's conditions are not parameter-matched, and saying so is better than
+pretending otherwise.
+
+### Next step
+
+M3, the training loop, on `feat/training-loop`. Its gate compares real throughput against
+the spike's 23,500 tok/s.
