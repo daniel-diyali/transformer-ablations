@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import torch
+import torch.nn as nn
 from torch import Tensor
 
 NormPlacement = Literal["pre", "post"]
@@ -146,3 +147,60 @@ def apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     t = x.shape[-2]
     cos, sin = cos[:t].unsqueeze(0).unsqueeze(0), sin[:t].unsqueeze(0).unsqueeze(0)
     return x * cos + _rotate_half(x) * sin
+
+
+# ---------------------------------------------------------------- attention
+
+
+def causal_attention(q: Tensor, k: Tensor, v: Tensor, dropout: nn.Dropout | None = None) -> Tensor:
+    """Scaled dot-product attention with a causal mask, from primitives.
+
+    Shapes are `(B, H, T, head_dim)`. This is deliberately the slow, explicit
+    version: score, scale, mask, normalise, average. It is equivalent to
+    `F.scaled_dot_product_attention(..., is_causal=True)`, and the tests
+    assert that equivalence numerically rather than taking it on faith.
+
+    The mask is built here rather than passed in so the function stays honest
+    about what "causal" means: position t may attend to positions <= t, and
+    the upper triangle is removed before the softmax so masked positions
+    contribute exactly zero probability rather than a small one.
+    """
+    scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.shape[-1])
+
+    t_q, t_k = q.shape[-2], k.shape[-2]
+    causal = torch.ones(t_q, t_k, dtype=torch.bool, device=q.device).tril(diagonal=t_k - t_q)
+    scores = scores.masked_fill(~causal, float("-inf"))
+
+    weights = torch.softmax(scores, dim=-1)
+    if dropout is not None:
+        weights = dropout(weights)
+    return weights @ v
+
+
+class CausalSelfAttention(nn.Module):
+    """Multi-head self-attention. One fused qkv projection, one output projection."""
+
+    def __init__(self, cfg: GPTConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=cfg.bias)
+        self.proj = nn.Linear(cfg.d_model, cfg.d_model, bias=cfg.bias)
+        self.attn_dropout = nn.Dropout(cfg.dropout)
+        self.resid_dropout = nn.Dropout(cfg.dropout)
+
+    def forward(self, x: Tensor, cos: Tensor | None = None, sin: Tensor | None = None) -> Tensor:
+        b, t, c = x.shape
+        n_head, head_dim = self.cfg.n_head, self.cfg.head_dim
+
+        # (B, T, 3C) -> three (B, H, T, head_dim)
+        q, k, v = self.qkv(x).split(c, dim=2)
+        q, k, v = (tensor.view(b, t, n_head, head_dim).transpose(1, 2) for tensor in (q, k, v))
+
+        if self.cfg.pos_encoding == "rope":
+            if cos is None or sin is None:
+                raise RuntimeError("rope selected but no rotation tables were supplied")
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+
+        y = causal_attention(q, k, v, self.attn_dropout if self.training else None)
+        y = y.transpose(1, 2).contiguous().view(b, t, c)
+        return self.resid_dropout(self.proj(y))
