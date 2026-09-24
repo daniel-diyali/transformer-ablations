@@ -10,8 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
     "torch>=2.14.0",
     "numpy>=2.4.6",
-    "tokenizers>=0.23.2",   # BPE only; the model and training loop are hand-written
-    "datasets>=5.0.1",      # corpus fetch only, never in the training loop
+    "tokenizers>=0.23.2",      # BPE only; the model and training loop are hand-written
+    "huggingface-hub>=1.33.0",  # corpus download only, never in the training loop
+    "pyarrow>=25.0.1",          # reads the corpus parquet shards
     "matplotlib>=3.11.2",
 ]
 

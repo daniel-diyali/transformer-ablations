@@ -4,10 +4,10 @@ A GPT-style decoder-only transformer implemented from scratch in PyTorch, traine
 roughly 14M parameters, used to run **controlled ablations on architectural choices** —
 with multiple seeds per condition and variance reported honestly.
 
-> **Status: scaffolding done, model not yet written.**
-> Design signed off, environment and CI green, throughput measured on the target
-> hardware. No trained results yet. This section gets replaced with findings and charts
-> as they land — see [PLAN.md](PLAN.md) for exactly where the project is.
+> **Status: corpus built, model not yet written.**
+> Design signed off, CI green, throughput measured, 466.8M tokens encoded and ready.
+> No trained results yet — the model lands next. This section gets replaced with
+> findings and charts as they arrive; see [PLAN.md](PLAN.md) for where the project is.
 
 ## What this is
 
@@ -57,9 +57,21 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv venv --python 3.11 && uv pip install -e ".[dev]"
-uv run pytest        # 6 environment smoke tests, ~1s
+uv run pytest        # 23 tests, ~1s, no network
 uv run ruff check .
 ```
+
+Build the corpus (downloads ~1 GB, takes about 2 minutes):
+
+```bash
+uv run python -m minigpt.data prepare
+uv run python -m minigpt.data inspect   # metadata plus a decoded sample
+```
+
+That produces **466.8M training tokens and 4.7M validation tokens** at vocab 8,192 —
+4.12 characters per token. A 50M-token ablation run sees 10.7% of the corpus and the
+200M flagship sees 42.8%, so no run repeats data. The artifacts stay out of git; rebuild
+them from the command above.
 
 The smoke tests assert what this README claims about the environment — the Python and
 torch floors, and the presence of the ops the model depends on — so a mismatch fails in
