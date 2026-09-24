@@ -19,6 +19,7 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 NormPlacement = Literal["pre", "post"]
@@ -204,3 +205,51 @@ class CausalSelfAttention(nn.Module):
         y = causal_attention(q, k, v, self.attn_dropout if self.training else None)
         y = y.transpose(1, 2).contiguous().view(b, t, c)
         return self.resid_dropout(self.proj(y))
+
+
+# -------------------------------------------------------------------- block
+
+
+class MLP(nn.Module):
+    """Position-wise feed-forward, widened 4x as in the original transformer."""
+
+    def __init__(self, cfg: GPTConfig) -> None:
+        super().__init__()
+        self.fc = nn.Linear(cfg.d_model, 4 * cfg.d_model, bias=cfg.bias)
+        self.proj = nn.Linear(4 * cfg.d_model, cfg.d_model, bias=cfg.bias)
+        self.dropout = nn.Dropout(cfg.dropout)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.dropout(self.proj(F.gelu(self.fc(x), approximate="tanh")))
+
+
+class Block(nn.Module):
+    """One transformer layer: attention, then MLP, each around a residual.
+
+    `norm_placement` is study A1's dimension and the only thing that differs
+    between its two conditions:
+
+        pre   x = x + attn(norm(x))      the norm sits inside the branch, so
+                                         the residual path stays unnormalised
+                                         from embedding to output
+        post  x = norm(x + attn(x))      the norm sits on the residual path
+                                         itself, rescaling it at every layer
+
+    Pre-norm is what every current decoder uses. The point of running the
+    comparison is to produce the evidence for that rather than assert it.
+    """
+
+    def __init__(self, cfg: GPTConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.norm_attn = nn.LayerNorm(cfg.d_model, bias=cfg.bias)
+        self.norm_mlp = nn.LayerNorm(cfg.d_model, bias=cfg.bias)
+        self.attn = CausalSelfAttention(cfg)
+        self.mlp = MLP(cfg)
+
+    def forward(self, x: Tensor, cos: Tensor | None = None, sin: Tensor | None = None) -> Tensor:
+        if self.cfg.norm_placement == "pre":
+            x = x + self.attn(self.norm_attn(x), cos, sin)
+            return x + self.mlp(self.norm_mlp(x))
+        x = self.norm_attn(x + self.attn(x, cos, sin))
+        return self.norm_mlp(x + self.mlp(x))
