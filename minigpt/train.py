@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import platform
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -181,3 +181,77 @@ def lr_at_token(tokens_seen: int, cfg: TrainConfig) -> float:
 def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = lr
+
+
+# --------------------------------------------------------------- checkpoints
+
+CHECKPOINT = "ckpt.pt"
+
+
+def _config_to_dict(cfg: TrainConfig) -> dict:
+    """Serialise a config, with Paths as strings so it round-trips through JSON."""
+    raw = asdict(cfg)
+    raw["data_dir"] = str(cfg.data_dir)
+    raw["out_dir"] = str(cfg.out_dir)
+    return raw
+
+
+def _save_checkpoint(
+    run_dir: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    cfg: TrainConfig,
+    step: int,
+    tokens_seen: int,
+    next_eval: int,
+    elapsed_s: float,
+    batch_generator: torch.Generator,
+) -> None:
+    """Write atomically, so an interrupt cannot leave a half-written checkpoint.
+
+    RNG state is part of the checkpoint. Without it a resumed run would draw a
+    different sequence of batches than an uninterrupted one, and the two would
+    stop being comparable — which is exactly what the ablations need them to be.
+    """
+    tmp = run_dir / (CHECKPOINT + ".tmp")
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "config": _config_to_dict(cfg),
+            "step": step,
+            "tokens_seen": tokens_seen,
+            "next_eval": next_eval,
+            "elapsed_s": elapsed_s,
+            "batch_generator": batch_generator.get_state(),
+            "torch_rng": torch.get_rng_state(),
+        },
+        tmp,
+    )
+    tmp.replace(run_dir / CHECKPOINT)
+
+
+def _maybe_resume(
+    run_dir: Path, model: torch.nn.Module, optimizer: torch.optim.Optimizer, cfg: TrainConfig
+) -> dict | None:
+    """Reload a checkpoint, refusing any that does not match the current config.
+
+    A mismatched resume silently corrupts a comparison: the run would carry one
+    condition's weights under another condition's name. Better to stop.
+    """
+    path = run_dir / CHECKPOINT
+    if not path.exists():
+        return None
+
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    if state["config"] != _config_to_dict(cfg):
+        raise RuntimeError(
+            f"{path} was written by a different config. Delete the run directory to "
+            "start over, or point out_dir somewhere else."
+        )
+
+    model.load_state_dict(state["model"])
+    optimizer.load_state_dict(state["optimizer"])
+    torch.set_rng_state(state["torch_rng"])
+    print(f"resuming {run_dir} at {state['tokens_seen']:,} tokens")
+    return state
