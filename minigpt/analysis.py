@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 
 FIGURES = Path("figures")
 
@@ -45,11 +46,21 @@ def load_record(run_dir: Path) -> dict | None:
     return json.loads(done.read_text()) if done.exists() else None
 
 
-def plot_loss_curve(run_dir: Path, out_path: Path | None = None, title: str | None = None) -> Path:
+def plot_loss_curve(
+    run_dir: Path,
+    out_path: Path | None = None,
+    title: str | None = None,
+    log_y: bool = True,
+) -> Path:
     """Training and validation loss against tokens seen.
 
     Both series share one axis because the question a reader has is whether
     they diverge, and that is only answerable when they are drawn together.
+
+    The y-axis is logarithmic by default. Loss falls from ~9 to under 2, and
+    on a linear axis that first plunge swallows the vertical space, leaving
+    the plateau — where the differences between conditions actually live —
+    squashed into a few pixels.
     """
     entries = load_metrics(run_dir)
     tokens = [e["tokens"] / 1e6 for e in entries]
@@ -75,9 +86,16 @@ def plot_loss_curve(run_dir: Path, out_path: Path | None = None, title: str | No
     ax.set_ylabel("cross-entropy loss")
     ax.set_title(title or f"{run_dir.name} — loss", loc="left", fontsize=11)
     ax.legend(frameon=False, loc="upper right")
-    ax.grid(True, alpha=0.2, linewidth=0.6)
+    ax.grid(True, alpha=0.2, linewidth=0.6, which="both")
     ax.spines[["top", "right"]].set_visible(False)
-    ax.set_ylim(bottom=min(min(train), min(val)) * 0.97)
+
+    if log_y:
+        ax.set_yscale("log")
+        ax.yaxis.set_major_formatter(ScalarFormatter())
+        ax.yaxis.set_minor_formatter(ScalarFormatter())
+        ax.tick_params(axis="y", which="minor", labelsize=7)
+    else:
+        ax.set_ylim(bottom=min(min(train), min(val)) * 0.97)
 
     out_path = out_path or FIGURES / f"{run_dir.name}-loss.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,10 +130,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--title", default=None)
+    parser.add_argument("--linear-y", action="store_true", help="linear loss axis")
     args = parser.parse_args(argv)
 
     if args.command == "loss-curve":
-        print(plot_loss_curve(args.run, args.out, args.title))
+        print(plot_loss_curve(args.run, args.out, args.title, log_y=not args.linear_y))
     else:
         print(json.dumps(summarize(args.run), indent=2))
     return 0
