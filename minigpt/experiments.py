@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
-from minigpt.data import load_meta
+from minigpt.data import load_meta, load_tokens
 from minigpt.model import GPTConfig
 from minigpt.train import TrainConfig, _config_to_dict, train
 
@@ -294,7 +294,7 @@ STUDIES: dict[str, Study] = {
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["list", "run"])
+    parser.add_argument("command", choices=["list", "run", "context-eval"])
     parser.add_argument(
         "--study", action="append", default=None, help="repeatable; omit to run all"
     )
@@ -326,6 +326,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  conditions: {', '.join(study.conditions)}")
             print(f"  hypothesis: {study.hypothesis}\n")
         print(f"total: {sum(len(s) for s in selected)} runs")
+        return 0
+
+    if args.command == "context-eval":
+        evaluate_context_scaling(args.out_dir, device=args.device)
         return 0
 
     if args.seeds is not None:
@@ -361,3 +365,89 @@ def _select(names: list[str] | None) -> list[Study]:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ------------------------------------------------- long-context evaluation (A2)
+
+CONTEXT_EVAL = "context_eval.jsonl"
+EVAL_CONTEXTS = (128, 256, 512, 1024)
+
+
+def evaluate_context_scaling(
+    out_dir: Path,
+    study: str = "pos_encoding",
+    contexts: Sequence[int] = EVAL_CONTEXTS,
+    device: str | None = None,
+) -> list[dict]:
+    """Score every finished run of `study` at several evaluation contexts.
+
+    This produces data rather than reading it, so it lives here rather than in
+    the analysis layer — which stays free of torch and therefore able to
+    regenerate charts without a GPU.
+
+    Tokens per evaluation are held constant by shrinking the batch as the
+    context grows. Otherwise a 1024-token context would score four times as
+    much text as a 256-token one, and the curve would confound context length
+    with sample size.
+    """
+    from minigpt.sample import load_run  # imported late: analysis must not need torch
+    from minigpt.train import evaluate
+
+    results = load_results(out_dir)
+    runs = [r for r in results.values() if r["study"] == study and r["status"] == "completed"]
+    if not runs:
+        raise RuntimeError(f"no completed runs for study {study!r} in {out_dir}")
+
+    rows: list[dict] = []
+    for record in sorted(runs, key=lambda r: (r["condition"], r["seed"])):
+        run_dir = Path(record["run_dir"])
+        model, saved = load_run(run_dir, device)
+        cfg = TrainConfig(
+            model=model.cfg, **{k: v for k, v in saved["config"].items() if k != "model"}
+        )
+        tokens = load_tokens("val", cfg.data_dir)
+        train_context = model.cfg.block_size
+
+        for context in contexts:
+            if context > model.cfg.n_positions:
+                # Learned encodings simply cannot represent these positions.
+                rows.append(
+                    {
+                        "study": study,
+                        "condition": record["condition"],
+                        "seed": record["seed"],
+                        "context": context,
+                        "val_loss": None,
+                        "train_context": train_context,
+                        "status": "unrepresentable",
+                    }
+                )
+                continue
+
+            batch = max(1, cfg.batch_size * train_context // context)
+            loss = evaluate(
+                model,
+                tokens,
+                replace(cfg, batch_size=batch),
+                str(next(model.parameters()).device),
+                block_size=context,
+            )
+            rows.append(
+                {
+                    "study": study,
+                    "condition": record["condition"],
+                    "seed": record["seed"],
+                    "context": context,
+                    "val_loss": round(loss, 6),
+                    "train_context": train_context,
+                    "status": "ok",
+                }
+            )
+            print(f"  {record['run']:<30} ctx {context:>5}  val {loss:.4f}")
+
+    path = out_dir / CONTEXT_EVAL
+    with path.open("w") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+    print(f"wrote {len(rows)} rows to {path}")
+    return rows
