@@ -231,3 +231,45 @@ differences between ablation conditions actually live — into a few pixels.
 
 M5, the sweep runner, on `feat/sweep-runner`: `Study` definitions, expansion over
 conditions × seeds, per-run failure isolation, `results.jsonl` aggregation.
+
+## 2026-09-24 — M5 sweep runner
+
+**The most important line in `experiments.py` is the unknown-override check.** A typo'd
+condition key that was silently ignored would let all 27 runs complete with every
+condition identical, and the resulting chart would read as a genuine finding of "no
+difference". That failure is undetectable from the output, so it has to be impossible by
+construction.
+
+**Resume checks a config fingerprint, not just a name.** Skipping on name alone would let
+a changed setting reuse stale results under the same study name, mixing two
+configurations into one set of numbers.
+
+**Failure isolation is per run.** A crash that halts the sweep is how a 27-run sweep
+quietly becomes a 9-run sweep that nobody notices until the charts look thin.
+
+**Tests now encode each study's own claim.** A1 and A3 are parameter-matched exactly
+(13.793M in every condition); A2 is not and cannot be (learned 14.186M, sinusoidal and
+RoPE 13.793M). Those are assertions about validity, not about code, and they are the only
+thing that would ever catch the studies drifting into confoundedness.
+
+**A short run of a full-size model is still a full-size model.** The CLI smoke test took
+57 s with `--token-budget 512` because the architecture stayed at 13.9M parameters. Adding
+model-size flags took the file from 82 s to 10 s. Worth remembering: shrink the model, not
+just the budget.
+
+**Two process slips worth recording.** First, I piped a CLI test through `tail`, which
+masked its non-zero exit, and committed a broken CLI — amended after catching it. Second,
+a `str.replace` on a test file silently did nothing because ruff had already reformatted
+the anchor; the edit reported success and changed nothing. Third, while writing these very notes, I reused a
+variable and wrote README content into PLAN.md — the script printed "README updated" and
+had clobbered a different file. Restored from git and redone with an assertion on the
+result, not just on the anchor.
+
+All three are the same failure I write tests against: an operation that appears to
+succeed while doing nothing, or doing something else. Assert on the anchor *and* on the
+outcome, and check exit codes rather than piped output.
+
+### Next step
+
+M6, the ablations, on `feat/ablations`: run all 27, then build the per-study charts
+showing individual seeds alongside the mean.
