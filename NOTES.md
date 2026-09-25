@@ -197,3 +197,37 @@ canonical, so a missing account costs a run nothing but a dashboard.
 M4, baseline run, on `feat/baseline-run`: train the sweep config to its full 50M budget,
 produce the first real loss curve and text samples. First artifact that is resume-legible
 on its own.
+
+## 2026-09-24 — M4 baseline run
+
+**Baseline trained.** 50,003,968 tokens, 6,104 steps, validation loss **9.045 → 1.885**
+in 26.7 minutes. Train and validation track each other the whole way — no overfitting,
+expected when a run sees only 10.7% of the corpus.
+
+**Throughput was higher than every benchmark: 31,202 tok/s** against the spike's 23,500
+and M3's 23,542. Both earlier figures were measured while other work ran on the same
+machine, so they were taken under contention. An uninterrupted half-hour run is the
+number the sweep will actually experience. Budgets revised: 27-run sweep ~12 h, flagship
+~1.8 h, project ~14 h rather than 19.
+
+Worth remembering: benchmark on an idle machine, or say plainly that the number is a
+floor. I reported 23,542 as though it were the loop's capability when it was the
+loop's capability *under load*.
+
+**Samples are genuinely coherent.** Grammatical, with narrative structure and characters
+that persist across paragraphs — and a bird named Bunny that becomes a Bear a few lines
+later. That failure mode is exactly what 13.9M parameters should produce, and it is more
+honest to show it than to cherry-pick.
+
+**Byte-level BPE has a hard floor of 257.** 256 byte values plus `<|endoftext|>`. A test
+fixture asked for 256 and failed after training a tokenizer. `build_tokenizer` now
+rejects it at the start and explains the floor.
+
+**Log y-axis on loss curves, by default.** Loss falls from ~9 to under 2, and on a linear
+axis the first plunge swallows the vertical space, squashing the plateau — where the
+differences between ablation conditions actually live — into a few pixels.
+
+### Next step
+
+M5, the sweep runner, on `feat/sweep-runner`: `Study` definitions, expansion over
+conditions × seeds, per-run failure isolation, `results.jsonl` aggregation.

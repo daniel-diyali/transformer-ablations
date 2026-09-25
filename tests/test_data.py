@@ -151,6 +151,20 @@ def test_get_batch_refuses_a_corpus_shorter_than_one_block(corpus):
         get_batch(np.arange(4, dtype=np.uint16), batch_size=1, block_size=8)
 
 
+def test_a_vocabulary_below_the_byte_level_floor_is_rejected(tmp_path):
+    """Byte-level BPE always contains 256 byte values plus the special tokens.
+
+    Asking for less cannot be satisfied, and failing at construction beats
+    failing after the tokenizer has already been trained.
+    """
+    shard = tmp_path / "s.parquet"
+    pq.write_table(pa.table({"text": DOCS[:8]}), shard)
+    cfg = DataConfig(vocab_size=100, data_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="byte-level floor"):
+        build_tokenizer(cfg, [shard])
+
+
 @pytest.mark.parametrize("n_shards", [0, 5])
 def test_download_rejects_an_out_of_range_shard_count(n_shards):
     """Caught before any network call, so a typo fails instantly."""
