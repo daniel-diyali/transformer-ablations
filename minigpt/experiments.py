@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as dataclass_fields
+from pathlib import Path
 
 from minigpt.model import GPTConfig
-from minigpt.train import TrainConfig, _config_to_dict
+from minigpt.train import TrainConfig, _config_to_dict, train
 
 MODEL_FIELDS = {f.name for f in dataclass_fields(GPTConfig)}
 TRAIN_FIELDS = {f.name for f in dataclass_fields(TrainConfig)} - {"model"}
@@ -108,3 +109,105 @@ class Study:
 
     def __len__(self) -> int:
         return len(self.conditions) * len(self.seeds)
+
+
+# ---------------------------------------------------------------- the sweep
+
+RESULTS = "results.jsonl"
+
+
+def load_results(out_dir: Path) -> dict[str, dict]:
+    """Completed run records, keyed by run name."""
+    path = out_dir / RESULTS
+    if not path.exists():
+        return {}
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return {record["run"]: record for record in records}
+
+
+def append_result(out_dir: Path, record: dict) -> None:
+    """Append one record. Written as it happens, so an interrupted sweep
+    still leaves every finished run on disk."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with (out_dir / RESULTS).open("a") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def _record_for(spec: RunSpec, outcome: dict) -> dict:
+    return {
+        "study": spec.study,
+        "condition": spec.condition,
+        "seed": spec.seed,
+        "run": spec.name,
+        "fingerprint": spec.fingerprint,
+        "status": outcome.get("status", "unknown"),
+        "final_val_loss": outcome.get("final_val_loss"),
+        "best_val_loss": outcome.get("best_val_loss"),
+        "tokens_seen": outcome.get("tokens_seen"),
+        "steps": outcome.get("step"),
+        "elapsed_s": outcome.get("elapsed_s"),
+        "tokens_per_s": outcome.get("tokens_per_s"),
+        "reason": outcome.get("reason"),
+        "run_dir": str(spec.config.run_dir()),
+    }
+
+
+def run_sweep(studies: Sequence[Study], base: TrainConfig, resume: bool = True) -> list[dict]:
+    """Run every condition and seed in `studies`, one at a time.
+
+    A failing run is recorded and the sweep continues. One bad condition must
+    not cost a night of compute, and a crash that stops everything is how a
+    sweep silently becomes a partial sweep nobody notices.
+    """
+    out_dir = base.out_dir
+    done = load_results(out_dir) if resume else {}
+    specs = [spec for study in studies for spec in study.expand(base)]
+
+    print(f"sweep: {len(specs)} runs across {len(studies)} studies")
+    records: list[dict] = []
+
+    for index, spec in enumerate(specs, start=1):
+        previous = done.get(spec.name)
+        if previous is not None:
+            if previous.get("fingerprint") != spec.fingerprint:
+                raise RuntimeError(
+                    f"{spec.name} was already run with a different config "
+                    f"({previous.get('fingerprint')} vs {spec.fingerprint}). "
+                    "Rename the study or clear its results before rerunning, or the "
+                    "sweep would mix settings under one name."
+                )
+            print(f"[{index}/{len(specs)}] {spec.name}: already done, skipping")
+            records.append(previous)
+            continue
+
+        print(f"[{index}/{len(specs)}] {spec.name}")
+        try:
+            outcome = train(spec.config)
+        except Exception as exc:
+            # Deliberately broad. A failed run is data about that condition,
+            # not a reason to abandon the other twenty-six.
+            outcome = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+            print(f"  ERROR: {outcome['reason']}")
+
+        record = _record_for(spec, outcome)
+        append_result(out_dir, record)
+        records.append(record)
+
+    _report(records)
+    return records
+
+
+def _report(records: Sequence[dict]) -> None:
+    """A short account of what happened, including what did not work."""
+    by_status: dict[str, int] = {}
+    for record in records:
+        by_status[record["status"]] = by_status.get(record["status"], 0) + 1
+
+    tally = ", ".join(f"{n} {status}" for status, n in sorted(by_status.items()))
+    print(f"\nsweep finished: {tally}")
+
+    problems = [r for r in records if r["status"] != "completed"]
+    if problems:
+        print("runs that did not complete:")
+        for record in problems:
+            print(f"  {record['run']}: {record['status']} — {record.get('reason')}")
