@@ -292,6 +292,21 @@ token embedding too; the figure above is measured from the built model.
 (batch gathering, clipping, scheduling, `loss.item()`) costs measurable throughput.
 `get_batch` is 1 ms of a 348 ms step.
 
+**Revised again by the M4 baseline run (2026-09-24).** A full 50M-token run on an
+otherwise idle machine sustained **31,202 tok/s** and finished in **26.7 minutes** — well
+above both the spike and the M3 loop benchmark, both of which were measured while other
+work was running on the same machine and therefore under contention. An uninterrupted
+half-hour run is the more trustworthy number, and it is the one the sweep will actually
+experience.
+
+| Estimate | Source | Per 50M run | 27-run sweep | Flagship 200M |
+|---|---|---|---|---|
+| 23,500 tok/s | day-1 spike | 37.4 min | 16.8 h | 2.5 h |
+| **31,202 tok/s** | **M4 baseline, idle machine** | **26.7 min** | **12.0 h** | **1.8 h** |
+
+Project compute is therefore about **14 hours**, not 19. Budgets below are kept at the
+conservative figure, since the sweep may contend with other work.
+
 Wall-clock per run adds evaluation and checkpointing on top of that:
 
 | | |

@@ -105,8 +105,10 @@ Produce the first loss curve and the first text samples.
 **Verified by:** validation loss decreases smoothly and plateaus; samples are recognizable
 English sentences; run directory contains complete metrics, config, and checkpoint.
 
-**Gate:** a loss curve and a sample paragraph in the PR description. First shareable
-artifact — from here the project is already resume-legible even if later milestones slip.
+**Gate: passed.** 50,003,968 tokens in 6,104 steps, **validation loss 9.045 → 1.885**,
+26.7 minutes at 31,202 tok/s. Train and validation track each other throughout — no
+overfitting, as expected when a run sees only 10.7% of the corpus. Samples are coherent
+English with narrative structure. Figure at `figures/baseline-50M-loss.png`.
 
 ---
 
