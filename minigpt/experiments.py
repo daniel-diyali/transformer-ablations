@@ -10,6 +10,7 @@ nobody intended.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from collections.abc import Iterator, Sequence
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
+from minigpt.data import load_meta
 from minigpt.model import GPTConfig
 from minigpt.train import TrainConfig, _config_to_dict, train
 
@@ -211,3 +213,134 @@ def _report(records: Sequence[dict]) -> None:
         print("runs that did not complete:")
         for record in problems:
             print(f"  {record['run']}: {record['status']} — {record.get('reason')}")
+
+
+# -------------------------------------------------------------- the studies
+#
+# Hypotheses are written here, before any of these run. Whether each held is
+# reported in FINDINGS.md, including the ones that did not.
+
+# Evaluation contexts beyond the training length that study A2 needs. The
+# learned condition must allocate embeddings for them up front; those stay at
+# their random initialisation because training never reaches that far, which
+# is precisely the effect being measured.
+A2_MAX_EVAL_CONTEXT = 1024
+
+
+def sweep_base(vocab_size: int, **overrides) -> TrainConfig:
+    """The shared configuration every condition inherits.
+
+    Measured at 13.89M parameters and roughly 27 minutes per 50M-token run.
+    """
+    model = GPTConfig(vocab_size=vocab_size, n_layer=6, n_head=6, d_model=384, block_size=256)
+    defaults = {"token_budget": 50_000_000, "batch_size": 32}
+    return TrainConfig(model=model, **{**defaults, **overrides})
+
+
+STUDIES: dict[str, Study] = {
+    "norm_placement": Study(
+        name="norm_placement",
+        hypothesis=(
+            "Post-norm trains less stably at six layers and ends at higher validation "
+            "loss than pre-norm, because post-norm renormalises the residual stream at "
+            "every layer while pre-norm leaves it untouched from embedding to output."
+        ),
+        conditions={
+            "pre": {"norm_placement": "pre"},
+            "post": {"norm_placement": "post"},
+        },
+    ),
+    "pos_encoding": Study(
+        name="pos_encoding",
+        hypothesis=(
+            "The three are close at the training context of 256. Beyond it, learned "
+            "encodings collapse because those positions were never trained, sinusoidal "
+            "degrades but stays defined, and RoPE degrades most gracefully because its "
+            "attention scores depend only on relative position."
+        ),
+        conditions={
+            "learned": {"pos_encoding": "learned"},
+            "sinusoidal": {"pos_encoding": "sinusoidal"},
+            "rope": {"pos_encoding": "rope"},
+        },
+        # Not parameter-matched, and cannot be: sinusoidal and RoPE carry no
+        # position parameters at all while learned carries n_positions * d_model.
+        # Stated in FINDINGS rather than papered over.
+        shared={"pos_capacity": A2_MAX_EVAL_CONTEXT},
+    ),
+    "head_count": Study(
+        name="head_count",
+        hypothesis=(
+            "One head is clearly worse; returns diminish sharply past six. Parameter "
+            "count is identical across all four conditions because heads only reshape a "
+            "fixed d_model, so any difference is attributable to attention structure "
+            "rather than capacity."
+        ),
+        conditions={
+            "h1": {"n_head": 1},
+            "h3": {"n_head": 3},
+            "h6": {"n_head": 6},
+            "h12": {"n_head": 12},
+        },
+    ),
+}
+
+
+# ---------------------------------------------------------------------- cli
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["list", "run"])
+    parser.add_argument(
+        "--study", action="append", default=None, help="repeatable; omit to run all"
+    )
+    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument("--out-dir", type=Path, default=Path("runs"))
+    parser.add_argument("--token-budget", type=int, default=None, help="override for smoke runs")
+    parser.add_argument("--seeds", type=int, default=None, help="override the seed count")
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--no-resume", action="store_true")
+    args = parser.parse_args(argv)
+
+    selected = _select(args.study)
+
+    if args.command == "list":
+        for study in selected:
+            print(
+                f"{study.name}  ({len(study.conditions)} conditions x {len(study.seeds)} seeds "
+                f"= {len(study)} runs)"
+            )
+            print(f"  conditions: {', '.join(study.conditions)}")
+            print(f"  hypothesis: {study.hypothesis}\n")
+        print(f"total: {sum(len(s) for s in selected)} runs")
+        return 0
+
+    if args.seeds is not None:
+        selected = [replace(s, seeds=tuple(range(args.seeds))) for s in selected]
+
+    base = sweep_base(
+        load_meta(args.data_dir)["vocab_size"],
+        data_dir=args.data_dir,
+        out_dir=args.out_dir,
+        device=args.device,
+        log_wandb=args.wandb,
+        **({"token_budget": args.token_budget} if args.token_budget else {}),
+    )
+
+    records = run_sweep(selected, base, resume=not args.no_resume)
+    return 0 if all(r["status"] == "completed" for r in records) else 1
+
+
+def _select(names: list[str] | None) -> list[Study]:
+    if not names:
+        return list(STUDIES.values())
+    unknown = [n for n in names if n not in STUDIES]
+    if unknown:
+        raise SystemExit(f"unknown study {unknown}; available: {sorted(STUDIES)}")
+    return [STUDIES[n] for n in names]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
