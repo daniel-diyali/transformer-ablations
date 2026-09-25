@@ -120,6 +120,18 @@ shapes still see identical data. Each writes `metrics.jsonl`, `config.json` with
 provenance, and a checkpoint into `runs/<name>/`. A completed run is skipped rather than
 redone, which is what makes an interrupted overnight sweep resumable.
 
+Run the ablations:
+
+```bash
+uv run python -m minigpt.experiments list            # studies and their hypotheses
+uv run python -m minigpt.experiments run             # all 27 runs, ~12 h
+uv run python -m minigpt.experiments run --study head_count
+```
+
+A failing run is recorded and the sweep continues — one bad condition costs one run, not
+a night. Rerunning skips finished runs, but refuses to skip any whose config has changed,
+so one study name can never hold results from two configurations.
+
 ## Measured cost
 
 Everything below was measured on one laptop. No cloud, no spend.

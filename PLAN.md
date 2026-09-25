@@ -119,11 +119,13 @@ English with narrative structure. Figure at `figures/baseline-50M-loss.png`.
 `DONE` markers for skip-on-rerun, per-run failure isolation, `results.jsonl` aggregation,
 a sweep summary report. Optional W&B backend behind a flag, pending Q3.
 
-**Verified by:** a 2-condition × 2-seed smoke study on a 30-second budget completes;
-re-running skips finished runs; an injected mid-sweep crash leaves prior results intact
-and the sweep continues; `results.jsonl` parses and matches the run directories.
+**Gate: passed.** 30 tests in ~10s cover expansion, resume, refusal of a changed config
+under an existing name, and per-run failure isolation. The sweep is **27 runs** across
+three studies; `minigpt.experiments list` prints each hypothesis before anything runs.
 
-**Gate:** smoke sweep reproducible from a clean clone.
+Tests also check each study against its own claim: A1 and A3 are parameter-matched
+exactly (13.793M every condition), A2 is not and cannot be (learned 14.186M). If that
+ever stops holding, a test is the only thing that would notice.
 
 ---
 
