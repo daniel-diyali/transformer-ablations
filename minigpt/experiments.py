@@ -227,12 +227,15 @@ def _report(records: Sequence[dict]) -> None:
 A2_MAX_EVAL_CONTEXT = 1024
 
 
-def sweep_base(vocab_size: int, **overrides) -> TrainConfig:
+def sweep_base(vocab_size: int, model_overrides: dict | None = None, **overrides) -> TrainConfig:
     """The shared configuration every condition inherits.
 
     Measured at 13.89M parameters and roughly 27 minutes per 50M-token run.
+    `model_overrides` exists so a smoke sweep can shrink the architecture as
+    well as the budget.
     """
-    model = GPTConfig(vocab_size=vocab_size, n_layer=6, n_head=6, d_model=384, block_size=256)
+    model_defaults = {"n_layer": 6, "n_head": 6, "d_model": 384, "block_size": 256}
+    model = GPTConfig(vocab_size=vocab_size, **{**model_defaults, **(model_overrides or {})})
     defaults = {"token_budget": 50_000_000, "batch_size": 32}
     return TrainConfig(model=model, **{**defaults, **overrides})
 
@@ -298,6 +301,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--out-dir", type=Path, default=Path("runs"))
     parser.add_argument("--token-budget", type=int, default=None, help="override for smoke runs")
+    # Shrinking the model as well as the budget is what makes a smoke sweep
+    # fast. A short run of a full-size model is still a full-size model.
+    parser.add_argument("--n-layer", type=int, default=None)
+    parser.add_argument("--n-head", type=int, default=None)
+    # head_count varies n_head over 1/3/6/12, so a shrunken d-model must stay
+    # divisible by 12 for that study. 24 works; 16 does not.
+    parser.add_argument("--d-model", type=int, default=None)
+    parser.add_argument("--block-size", type=int, default=None)
     parser.add_argument("--seeds", type=int, default=None, help="override the seed count")
     parser.add_argument("--device", default=None)
     parser.add_argument("--wandb", action="store_true")
@@ -320,8 +331,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.seeds is not None:
         selected = [replace(s, seeds=tuple(range(args.seeds))) for s in selected]
 
+    model_overrides = {
+        name: getattr(args, name)
+        for name in ("n_layer", "n_head", "d_model", "block_size")
+        if getattr(args, name) is not None
+    }
     base = sweep_base(
         load_meta(args.data_dir)["vocab_size"],
+        model_overrides=model_overrides,
         data_dir=args.data_dir,
         out_dir=args.out_dir,
         device=args.device,
