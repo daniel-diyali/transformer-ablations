@@ -20,7 +20,8 @@ from pathlib import Path
 
 from minigpt.data import load_meta, load_tokens
 from minigpt.model import GPTConfig
-from minigpt.train import TrainConfig, _config_to_dict, train
+from minigpt.thermal import DEFAULT_PROFILE, PROFILES, ThermalProfile, get_profile
+from minigpt.train import TrainConfig, _config_to_dict, pick_device, train
 
 MODEL_FIELDS = {f.name for f in dataclass_fields(GPTConfig)}
 TRAIN_FIELDS = {f.name for f in dataclass_fields(TrainConfig)} - {"model"}
@@ -154,18 +155,24 @@ def _record_for(spec: RunSpec, outcome: dict) -> dict:
     }
 
 
-def run_sweep(studies: Sequence[Study], base: TrainConfig, resume: bool = True) -> list[dict]:
+def run_sweep(
+    studies: Sequence[Study],
+    base: TrainConfig,
+    resume: bool = True,
+    thermal: ThermalProfile | None = None,
+) -> list[dict]:
     """Run every condition and seed in `studies`, one at a time.
 
     A failing run is recorded and the sweep continues. One bad condition must
     not cost a night of compute, and a crash that stops everything is how a
     sweep silently becomes a partial sweep nobody notices.
     """
+    thermal = thermal or PROFILES["full"]
     out_dir = base.out_dir
     done = load_results(out_dir) if resume else {}
     specs = [spec for study in studies for spec in study.expand(base)]
 
-    print(f"sweep: {len(specs)} runs across {len(studies)} studies")
+    print(f"sweep: {len(specs)} runs across {len(studies)} studies (thermal: {thermal.name})")
     records: list[dict] = []
 
     for index, spec in enumerate(specs, start=1):
@@ -182,9 +189,12 @@ def run_sweep(studies: Sequence[Study], base: TrainConfig, resume: bool = True) 
             records.append(previous)
             continue
 
+        # Hold before starting a fresh run rather than part-way through one.
+        thermal.wait_for_mains(pick_device(base.device))
+
         print(f"[{index}/{len(specs)}] {spec.name}")
         try:
-            outcome = train(spec.config)
+            outcome = train(spec.config, thermal=thermal)
         except Exception as exc:
             # Deliberately broad. A failed run is data about that condition,
             # not a reason to abandon the other twenty-six.
@@ -194,6 +204,13 @@ def run_sweep(studies: Sequence[Study], base: TrainConfig, resume: bool = True) 
         record = _record_for(spec, outcome)
         append_result(out_dir, record)
         records.append(record)
+
+        # Let the machine shed heat before loading it again. Skipped after
+        # the final run, where there is nothing left to protect.
+        if index < len(specs):
+            cooled = thermal.cool_between_runs(pick_device(base.device))
+            if cooled:
+                print(f"  cooling down {cooled:.0f}s")
 
     _report(records)
     return records
@@ -312,6 +329,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seeds", type=int, default=None, help="override the seed count")
     parser.add_argument("--device", default=None)
     parser.add_argument("--wandb", action="store_true")
+    parser.add_argument(
+        "--thermal",
+        choices=sorted(PROFILES),
+        default=DEFAULT_PROFILE,
+        help="execution pacing; does not affect results (default: %(default)s)",
+    )
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args(argv)
 
@@ -350,7 +373,9 @@ def main(argv: list[str] | None = None) -> int:
         **({"token_budget": args.token_budget} if args.token_budget else {}),
     )
 
-    records = run_sweep(selected, base, resume=not args.no_resume)
+    records = run_sweep(
+        selected, base, resume=not args.no_resume, thermal=get_profile(args.thermal)
+    )
     return 0 if all(r["status"] == "completed" for r in records) else 1
 
 
