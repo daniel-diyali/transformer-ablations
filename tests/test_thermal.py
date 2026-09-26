@@ -189,3 +189,34 @@ def test_idle_time_survives_a_resume(mini_corpus, tmp_path):
 
     assert "paused_s" in checkpoint, "checkpoint dropped the idle-time counter"
     assert checkpoint["paused_s"] > 0
+
+
+def test_battery_detection_fails_open(monkeypatch):
+    """A broken power probe must never block a sweep.
+
+    Reading power state is best-effort: a non-macOS host, a missing tool or a
+    timeout all report mains power, so training continues rather than hanging
+    on a question it cannot answer.
+    """
+    import minigpt.thermal as thermal_module
+
+    monkeypatch.setattr(thermal_module.shutil, "which", lambda _: None)
+    assert thermal_module.on_battery() is False
+
+
+def test_waiting_for_mains_is_off_unless_asked():
+    assert PROFILES["full"].pause_on_battery is False
+    assert PROFILES["full"].wait_for_mains("cpu") == 0.0
+
+
+def test_the_paced_profiles_hold_while_unplugged():
+    """A multi-hour sweep would otherwise flatten the battery and die with it."""
+    assert PROFILES["cool"].pause_on_battery is True
+    assert PROFILES["quiet"].pause_on_battery is True
+
+
+def test_a_profile_on_mains_power_does_not_wait(monkeypatch):
+    import minigpt.thermal as thermal_module
+
+    monkeypatch.setattr(thermal_module, "on_battery", lambda: False)
+    assert PROFILES["cool"].wait_for_mains("cpu") == 0.0

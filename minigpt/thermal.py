@@ -25,6 +25,8 @@ must still recognise it as already done.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 
@@ -43,6 +45,10 @@ class ThermalProfile:
     pause_every_steps: int = 0
     pause_seconds: float = 0.0
     cooldown_between_runs_s: float = 0.0
+    # Hold work while unplugged. A multi-hour sweep will flatten a laptop
+    # battery and take the machine down with it, losing the run in progress.
+    pause_on_battery: bool = False
+    battery_poll_seconds: float = 30.0
     # Releases cached MPS blocks. Lowers the allocated footprint without
     # touching any result, since it frees cache rather than live tensors.
     empty_cache_every_steps: int = 0
@@ -90,6 +96,25 @@ class ThermalProfile:
         elif device == "cuda":
             torch.cuda.empty_cache()
 
+    def wait_for_mains(self, device: str) -> float:
+        """Block while the machine is on battery. Returns seconds waited.
+
+        Idle time, like every other lever here: it delays arithmetic without
+        changing it, so a run interrupted by an unplugged laptop still
+        produces the same result it would have produced plugged in.
+        """
+        if not self.pause_on_battery or not on_battery():
+            return 0.0
+
+        _synchronize(device)
+        started = time.monotonic()
+        print("on battery — holding until power is reconnected", flush=True)
+        while on_battery():
+            time.sleep(self.battery_poll_seconds)
+        waited = time.monotonic() - started
+        print(f"power back after {waited / 60:.1f} min — resuming", flush=True)
+        return waited
+
     def cool_between_runs(self, device: str) -> float:
         """Idle between runs, letting the machine shed heat before the next one."""
         if self.cooldown_between_runs_s <= 0:
@@ -100,6 +125,24 @@ class ThermalProfile:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def on_battery() -> bool:
+    """True when running unplugged.
+
+    Best-effort and deliberately fail-open: if the power state cannot be read
+    — a non-macOS host, a missing tool, a timeout — this reports mains power
+    so a sweep is never blocked by a broken probe.
+    """
+    if shutil.which("pmset") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["pmset", "-g", "ps"], capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "Battery Power" in result.stdout
 
 
 def _synchronize(device: str) -> None:
@@ -125,6 +168,7 @@ PROFILES: dict[str, ThermalProfile] = {
         pause_seconds=6.0,
         cooldown_between_runs_s=60.0,
         empty_cache_every_steps=40,
+        pause_on_battery=True,
     ),
     # For working at the machine while a sweep runs behind you.
     "quiet": ThermalProfile(
@@ -133,6 +177,7 @@ PROFILES: dict[str, ThermalProfile] = {
         pause_seconds=20.0,
         cooldown_between_runs_s=120.0,
         empty_cache_every_steps=40,
+        pause_on_battery=True,
     ),
 }
 

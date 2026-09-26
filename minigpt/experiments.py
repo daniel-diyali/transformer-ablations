@@ -189,6 +189,9 @@ def run_sweep(
             records.append(previous)
             continue
 
+        # Hold before starting a fresh run rather than part-way through one.
+        thermal.wait_for_mains(pick_device(base.device))
+
         print(f"[{index}/{len(specs)}] {spec.name}")
         try:
             outcome = train(spec.config, thermal=thermal)

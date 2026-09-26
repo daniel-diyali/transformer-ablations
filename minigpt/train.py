@@ -421,6 +421,11 @@ def train(cfg: TrainConfig, resume: bool = True, thermal: ThermalProfile | None 
         paused_total += thermal.pause_if_due(step, device)
         thermal.release_cache_if_due(step, device)
 
+        # Checked on the same cadence as the pause so this does not shell out
+        # to pmset every step. Waiting counts as idle, like any other pause.
+        if thermal.paces and step % thermal.pause_every_steps == 0:
+            paused_total += thermal.wait_for_mains(device)
+
         if tokens_seen >= next_eval or tokens_seen >= cfg.token_budget:
             elapsed = elapsed_before + time.perf_counter() - started
             entry = {
