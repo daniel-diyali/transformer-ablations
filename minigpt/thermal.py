@@ -118,18 +118,21 @@ PROFILES: dict[str, ThermalProfile] = {
     # The default for long sweeps: noticeably cooler, still finishes overnight.
     "cool": ThermalProfile(
         name="cool",
-        pause_every_steps=4,
-        pause_seconds=0.6,
+        # Coarse on purpose. Sub-second gaps hold the same duty cycle but never
+        # let the GPU drop its clocks, so average power barely moves. A pause
+        # measured in seconds gives it long enough to actually idle down.
+        pause_every_steps=40,
+        pause_seconds=6.0,
         cooldown_between_runs_s=60.0,
-        empty_cache_every_steps=50,
+        empty_cache_every_steps=40,
     ),
     # For working at the machine while a sweep runs behind you.
     "quiet": ThermalProfile(
         name="quiet",
-        pause_every_steps=2,
-        pause_seconds=1.0,
+        pause_every_steps=40,
+        pause_seconds=20.0,
         cooldown_between_runs_s=120.0,
-        empty_cache_every_steps=25,
+        empty_cache_every_steps=40,
     ),
 }
 
