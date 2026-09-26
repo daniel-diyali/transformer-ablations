@@ -308,10 +308,17 @@ def test_the_cli_rejects_an_unknown_study():
 
 
 def test_the_cli_runs_a_shrunken_sweep(mini_corpus, tmp_path, capsys):
-    """Shrinking the model and the budget is what makes wiring testable in seconds."""
+    """Shrinking the model and the budget is what makes wiring testable in seconds.
+
+    Pacing is opted out of explicitly. The CLI defaults to the "cool" profile,
+    which idles 60s between runs, so inheriting the default here would trade a
+    two-second test for a two-minute one while testing nothing extra.
+    """
     exit_code = main(
         [
             "run",
+            "--thermal",
+            "full",
             "--study",
             "norm_placement",
             "--token-budget",
