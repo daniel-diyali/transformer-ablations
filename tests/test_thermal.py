@@ -13,6 +13,7 @@ a night of compute would be repeated for no scientific reason.
 """
 
 import pytest
+import torch
 
 from minigpt.experiments import RunSpec, Study, config_hash, run_sweep
 from minigpt.model import GPTConfig
@@ -170,3 +171,21 @@ def test_duty_cycle_predicts_the_slowdown_before_committing_hours():
     assert PROFILES["full"].expected_duty_cycle(step_seconds=0.26) == 1.0
     # A nonsense step time cannot produce a nonsense prediction.
     assert cool.expected_duty_cycle(step_seconds=0.0) == 1.0
+
+
+def test_idle_time_survives_a_resume(mini_corpus, tmp_path):
+    """Paused seconds belong in the checkpoint, like elapsed time.
+
+    Without this the counter restarts at zero on every resume, and
+    compute_tokens_per_s — which subtracts idle from wall-clock — reports a
+    resumed run as far faster than it was. Found on a real run that had
+    resumed three times.
+    """
+    profile = ThermalProfile(name="t", pause_every_steps=1, pause_seconds=0.02)
+    cfg = tiny_config(mini_corpus, tmp_path / "runs", run_name="resumed", token_budget=512)
+
+    train(cfg, thermal=profile)
+    checkpoint = torch.load(cfg.run_dir() / "ckpt.pt", map_location="cpu", weights_only=False)
+
+    assert "paused_s" in checkpoint, "checkpoint dropped the idle-time counter"
+    assert checkpoint["paused_s"] > 0

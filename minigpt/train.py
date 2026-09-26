@@ -221,6 +221,7 @@ def _save_checkpoint(
     tokens_seen: int,
     next_eval: int,
     elapsed_s: float,
+    paused_s: float,
     batch_generator: torch.Generator,
 ) -> None:
     """Write atomically, so an interrupt cannot leave a half-written checkpoint.
@@ -239,6 +240,7 @@ def _save_checkpoint(
             "tokens_seen": tokens_seen,
             "next_eval": next_eval,
             "elapsed_s": elapsed_s,
+            "paused_s": paused_s,
             "batch_generator": batch_generator.get_state(),
             "torch_rng": torch.get_rng_state(),
         },
@@ -451,6 +453,7 @@ def train(cfg: TrainConfig, resume: bool = True, thermal: ThermalProfile | None 
                 tokens_seen,
                 next_eval,
                 elapsed,
+                paused_total,
                 batch_generator,
             )
 
