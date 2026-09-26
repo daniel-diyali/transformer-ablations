@@ -273,3 +273,45 @@ outcome, and check exit codes rather than piped output.
 
 M6, the ablations, on `feat/ablations`: run all 27, then build the per-study charts
 showing individual seeds alongside the mean.
+
+## 2026-09-26 — thermal profiles, and two ways a long run dies quietly
+
+The sweep pinned the GPU at 98-99% for hours on a laptop, so runs are now paced:
+identical arithmetic with short idle gaps. `minigpt/thermal.py` explains why duty cycling
+was chosen over smaller batches or gradient accumulation — those would cut memory but
+would change results and invalidate the three runs already recorded at batch 32.
+
+**A default that is right for a sweep can be wrong for a test.** The CLI defaults to the
+`cool` profile, which idles 60s between runs. The CLI smoke test invoked `run` without a
+profile, inherited that default, and sat in `sleep()` — the whole suite looked hung at 40%
+with the process at 0% CPU and no output. It was not hung; it was obeying me. Anything on
+a test's path now opts out of pacing explicitly. Worth generalising: when adding a default
+that spends wall-clock, check what else picks it up.
+
+**Two claims were verified by hand and then left unguarded.** The commit message recorded
+that paced and unpaced runs produced identical validation loss to the last digit, but no
+test referenced `thermal` at all, while the module docstring said the invariance was
+"asserted directly in the tests". A verified claim and a guarded claim are not the same
+thing — the first is true today, the second stays true. `tests/test_thermal.py` now asserts
+both the bit-identical result and that a paced rerun still skips runs finished at full
+speed.
+
+**A backgrounded run dies with the shell that started it.** The sweep was launched with
+`nohup ... &` from a tool session and was gone within the hour, having logged a `resuming`
+line and nothing after it — the same way a backgrounded test run vanished mid-suite
+earlier. `nohup` ignores SIGHUP but does not survive the process group being cleaned up.
+Long runs are now started in their own session, and the check is `ps -o ppid` showing 1,
+not merely that a pid exists:
+
+    python -c 'import os,sys; os.fork() and sys.exit(0); os.setsid(); os.execv(...)'
+
+macOS has no `setsid(1)`, hence the inline fork. Note also that `pgrep -f
+'minigpt.experiments run'` matches the launching shell's own command line, so a liveness
+guard built on it reports a sweep that does not exist. Match the interpreter process, or
+check `ppid`.
+
+### Next step
+
+Still M6: the 27-run sweep is resuming under the `cool` profile at run 4 of 27. When it
+finishes, run `context-eval`, build the three study charts plus the context-scaling chart,
+and write `FINDINGS.md` reporting each hypothesis against what happened.
