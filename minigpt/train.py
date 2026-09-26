@@ -23,6 +23,7 @@ import torch
 
 from minigpt.data import get_batch, load_meta, load_tokens
 from minigpt.model import GPT, GPTConfig
+from minigpt.thermal import PROFILES, ThermalProfile
 
 DONE_MARKER = "DONE.json"
 FAILED_MARKER = "FAILED.json"
@@ -329,8 +330,13 @@ def _wandb_run(cfg: TrainConfig, device: str):
 # -------------------------------------------------------------- training loop
 
 
-def train(cfg: TrainConfig, resume: bool = True) -> dict:
-    """Train one model to its token budget. Returns the run record."""
+def train(cfg: TrainConfig, resume: bool = True, thermal: ThermalProfile | None = None) -> dict:
+    """Train one model to its token budget. Returns the run record.
+
+    `thermal` paces execution without altering results; see minigpt/thermal.py.
+    Defaults to no pacing so library callers and tests run at full speed.
+    """
+    thermal = thermal or PROFILES["full"]
     run_dir = cfg.run_dir()
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -354,7 +360,14 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
     next_eval = state["next_eval"] if state else 0
 
     (run_dir / "config.json").write_text(
-        json.dumps({"config": _config_to_dict(cfg), "provenance": provenance(device)}, indent=2)
+        json.dumps(
+            {
+                "config": _config_to_dict(cfg),
+                "provenance": provenance(device),
+                "thermal": thermal.as_dict(),
+            },
+            indent=2,
+        )
         + "\n"
     )
 
@@ -366,6 +379,7 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
     metrics_path = run_dir / "metrics.jsonl"
     started = time.perf_counter()
     elapsed_before = state["elapsed_s"] if state else 0.0
+    paused_total = state.get("paused_s", 0.0) if state else 0.0
 
     while tokens_seen < cfg.token_budget:
         lr = lr_at_token(tokens_seen, cfg)
@@ -400,6 +414,11 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
         optimizer.step()
         step += 1
 
+        # Idle briefly so the GPU is not saturated continuously. This changes
+        # wall-clock only; the arithmetic above is untouched.
+        paused_total += thermal.pause_if_due(step, device)
+        thermal.release_cache_if_due(step, device)
+
         if tokens_seen >= next_eval or tokens_seen >= cfg.token_budget:
             elapsed = elapsed_before + time.perf_counter() - started
             entry = {
@@ -410,6 +429,8 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
                 "lr": lr,
                 "elapsed_s": round(elapsed, 2),
                 "tokens_per_s": round(tokens_seen / max(elapsed, 1e-9)),
+                "paused_s": round(paused_total, 1),
+                "compute_tokens_per_s": round(tokens_seen / max(elapsed - paused_total, 1e-9)),
             }
             with metrics_path.open("a") as fh:
                 fh.write(json.dumps(entry) + "\n")
@@ -442,6 +463,9 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
         "best_val_loss": _best_val_loss(metrics_path),
         "elapsed_s": round(elapsed, 2),
         "tokens_per_s": round(tokens_seen / max(elapsed, 1e-9)),
+        "paused_s": round(paused_total, 1),
+        "compute_tokens_per_s": round(tokens_seen / max(elapsed - paused_total, 1e-9)),
+        "thermal_profile": thermal.name,
         "device": device,
         "run_dir": str(run_dir),
     }

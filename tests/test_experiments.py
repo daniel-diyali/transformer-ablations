@@ -248,11 +248,11 @@ def test_one_failing_run_does_not_stop_the_sweep(mini_corpus, tmp_path, monkeypa
     real_train = experiments.train
     calls = {"n": 0}
 
-    def flaky(cfg):
+    def flaky(cfg, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("injected failure")
-        return real_train(cfg)
+        return real_train(cfg, **kwargs)
 
     monkeypatch.setattr(experiments, "train", flaky)
     records = run_sweep([TWO_BY_TWO], tiny_base(mini_corpus, tmp_path / "runs"))
@@ -267,7 +267,7 @@ def test_a_failed_run_is_recorded_rather_than_dropped(mini_corpus, tmp_path, mon
     import minigpt.experiments as experiments
 
     monkeypatch.setattr(
-        experiments, "train", lambda cfg: (_ for _ in ()).throw(RuntimeError("boom"))
+        experiments, "train", lambda cfg, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
     )
     run_sweep([TWO_BY_TWO], tiny_base(mini_corpus, tmp_path / "runs"))
 
