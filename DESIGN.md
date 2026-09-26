@@ -279,6 +279,21 @@ Measured mean (78.1%) sits above the predicted duty cycle (63%) for two honest
 reasons: evaluation passes run unpaced, and the sampler is too slow to catch
 every gap.
 
+### Holding on battery
+
+The paced profiles also stop while the machine is unplugged, resuming when power
+returns. A 27-run sweep is hours of sustained GPU work; on battery that flattens
+a laptop in three or four hours and takes the run down with it.
+
+Waiting is idle time like every other lever here — it delays arithmetic without
+changing it — so a run interrupted by an unplugged laptop still produces the
+result it would have produced plugged in. The wait counts into `paused_s`, so
+throughput accounting stays honest.
+
+Detection fails open by design. A non-macOS host, a missing `pmset`, or a
+timeout all report mains power. A broken probe must never be able to hang a
+sweep on a question it cannot answer.
+
 **What is not verified:** actual temperature and fan speed. Reading those needs
 `powermetrics` under sudo, which this project does not have. The duty cycle and
 utilization drop are measured; the thermal outcome is inferred from them.

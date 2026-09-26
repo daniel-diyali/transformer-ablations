@@ -349,3 +349,32 @@ and resume — that design has now paid for itself three times.
 
 **Not verified:** actual temperature and fan speed. Reading them needs `powermetrics`
 under sudo. Duty cycle and utilization are measured; the thermal outcome is inferred.
+
+## 2026-09-26 — Holding on battery
+
+Jarvis flagged that the laptop was unplugged at 95% with ~19 h of work left. Under
+sustained GPU load that battery lasts three or four hours, so the sweep would have
+flattened the machine and gone down with it — a fourth death, and the first that
+would also have cost Daniel his laptop mid-afternoon.
+
+The paced profiles now hold while unplugged and resume on power. Same reasoning as
+every other lever here: waiting delays arithmetic without changing it, so a run
+interrupted by an unplugged laptop produces the result it would have produced plugged
+in. Counted into `paused_s` so throughput accounting stays honest.
+
+**Detection fails open on purpose.** No `pmset`, a timeout, a non-macOS host — all
+report mains power. A probe that cannot answer must not be able to hang a sweep.
+
+Verified live: restarted on battery, skipped the four finished runs, and held before
+run 5 with the GPU at 5%.
+
+### Early A1 signal, 4 of 27 runs in
+
+pre-norm 1.8851 / 1.8835 / 1.8867 (spread 0.0032); post-norm s0 1.8895.
+
+The gap between conditions (~0.004) is about the size of the seed spread. If that
+holds across the remaining post-norm seeds, A1's hypothesis — that post-norm ends at
+*higher* loss — is only weakly supported at six layers, and the honest finding is
+"indistinguishable from seed noise at this scale". Exactly the outcome three seeds
+per condition exist to detect, and exactly the kind of result that gets quietly
+rounded into a win in repos that report a bare mean.
