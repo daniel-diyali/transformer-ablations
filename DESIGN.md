@@ -237,6 +237,52 @@ behind a flag.** The repo must work fully with no account and no network. W&B is
 `if cfg.wandb:` block, and it puts named industry observability tooling on the resume —
 a gap flagged in the job-posting analysis. Pending Q3.
 
+## 5.5 Thermal profile
+
+A 27-run sweep is hours of sustained GPU work. On the laptop it runs on, that
+means heat and fan noise while charging — a real cost to the person whose
+machine it is, and the reason the first attempt was killed partway through.
+
+**The lever is duty cycling: identical work, with idle gaps.** Pacing changes
+*when* arithmetic happens, never *what* arithmetic happens, so a paced run and
+a full-speed run from the same seed produce bit-identical losses. That is
+asserted in the tests rather than assumed, because it is the only thing making
+it safe to pace a sweep whose first three runs were recorded at full speed.
+
+The rejected alternatives are rejected for the same reason. A smaller batch or
+gradient accumulation would cut memory, but both change results and would
+invalidate those three completed runs.
+
+A `ThermalProfile` is therefore **not** part of `TrainConfig` and takes no part
+in a run's config fingerprint. Pacing is an execution concern; a run paced
+differently is the same experiment, and resume must still skip it.
+
+### Measured, on the live sweep
+
+| | Unpaced (`full`) | Paced (`cool`) |
+|---|---|---|
+| GPU utilization | 98–99% sustained | **78.1% mean**, 16.3% of samples idle |
+| GPU memory | 7.47 GB | 7.0–7.3 GB |
+| CPU idle | ~85% | ~85% |
+| Per 50M-token run | 26 min | ~41 min |
+| Full 27-run sweep | ~11.7 h | **~19 h** |
+
+**Pause granularity had to be found empirically.** The first `cool` profile
+paused 0.6s every 4 steps — the same 63% duty cycle — and did nothing at all:
+utilization stayed at 97–99%, indistinguishable from full speed, even though
+`paused_s` proved the sleeps were firing exactly on schedule. Sub-second gaps
+hold the duty cycle but never let the GPU drop its clocks. Spreading the same
+idle into 6s pauses every 40 steps works: utilization collapses to 0–7% during
+each pause and returns to 96–100% during work.
+
+Measured mean (78.1%) sits above the predicted duty cycle (63%) for two honest
+reasons: evaluation passes run unpaced, and the sampler is too slow to catch
+every gap.
+
+**What is not verified:** actual temperature and fan speed. Reading those needs
+`powermetrics` under sudo, which this project does not have. The duty cycle and
+utilization drop are measured; the thermal outcome is inferred from them.
+
 ## 6. Ablation selection
 
 Three studies recommended, chosen for what they let you *say*, not just measure.

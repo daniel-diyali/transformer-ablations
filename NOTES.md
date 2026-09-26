@@ -315,3 +315,37 @@ check `ppid`.
 Still M6: the 27-run sweep is resuming under the `cool` profile at run 4 of 27. When it
 finishes, run `context-eval`, build the three study charts plus the context-scaling chart,
 and write `FINDINGS.md` reporting each hypothesis against what happened.
+
+## 2026-09-26 — Thermal pacing, and three quiet deaths
+
+**Daniel's machine was overheating.** Jarvis suspended the sweep mid-run; Daniel's
+call was to rerun it cooler. New standing rule, now in AGENTS.md: ask before any GPU
+or multi-hour job, and state duration and thermal impact up front.
+
+**Duty cycling was chosen because it is scientifically inert.** Same batch, same data
+order, same gradients — only wall-clock changes. Verified rather than assumed: same
+seed, paced and unpaced, identical final loss to the last digit. Smaller batch or
+gradient accumulation would cut memory but change results, and would have invalidated
+the three runs already recorded at batch 32.
+
+Consequence: `ThermalProfile` is deliberately **not** in `TrainConfig` and not in the
+config fingerprint. Had it been, resuming a paced sweep would have refused to skip
+those three runs and repeated a night of compute for no scientific reason.
+
+**A lever that fires is not a lever that works.** The first `cool` profile paused 0.6s
+every 4 steps. `paused_s` proved the sleeps happened exactly on schedule — and GPU
+utilization stayed at 97–99%, identical to full speed. Sub-second gaps hold the duty
+cycle but never let the GPU downclock. The same 63% duty as 6s pauses every 40 steps
+drops utilization to 0–7% during each gap. Measured mean fell 98–99% → **78.1%**.
+
+Second time in two days I've claimed an intervention worked without measuring the
+thing I cared about (the first was blaming OneDrive for a GPU-bound slowdown).
+
+**Three deaths, none the sweep's fault.** One reboot; twice the process was reaped
+because `nohup cmd &` leaves the child in the launching shell's process group. macOS
+has no `setsid(1)`. `scripts/launch_detached.py` uses `start_new_session=True`; the
+sweep now runs with ppid 1. Every death was survivable only because runs checkpoint
+and resume — that design has now paid for itself three times.
+
+**Not verified:** actual temperature and fan speed. Reading them needs `powermetrics`
+under sudo. Duty cycle and utilization are measured; the thermal outcome is inferred.
