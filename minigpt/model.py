@@ -25,6 +25,12 @@ from torch import Tensor
 NormPlacement = Literal["pre", "post"]
 PosEncoding = Literal["learned", "sinusoidal", "rope"]
 
+# GPT-2's initialisation scale for embeddings and linear weights. Named because
+# the fixed sinusoidal table is rescaled to match it, and the two must agree:
+# if they drift apart the position signal silently starts swamping the token
+# signal again, which is a ~0.75 nat regression that no test on shapes catches.
+EMBED_INIT_STD = 0.02
+
 
 @dataclass(frozen=True)
 class GPTConfig:
@@ -301,11 +307,11 @@ class GPT(nn.Module):
     @staticmethod
     def _init_weights(module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=EMBED_INIT_STD)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=EMBED_INIT_STD)
 
     def num_params(self, non_embedding: bool = True) -> int:
         """Parameter count. Position embeddings are excluded by convention."""
