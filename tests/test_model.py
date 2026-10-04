@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from minigpt.model import (
+    EMBED_INIT_STD,
     GPT,
     Block,
     CausalSelfAttention,
@@ -22,6 +23,7 @@ from minigpt.model import (
     apply_rope,
     causal_attention,
     rope_tables,
+    scaled_sinusoidal_encoding,
     sinusoidal_encoding,
 )
 
@@ -133,6 +135,74 @@ def test_sinusoidal_values_stay_bounded():
 @pytest.mark.parametrize("d_model", [7, 8, 31, 32])
 def test_sinusoidal_handles_odd_and_even_widths(d_model):
     assert sinusoidal_encoding(12, d_model).shape == (12, d_model)
+
+
+# The raw table's amplitude is the bug that cost study A2 its sinusoidal arm:
+# added untouched it outweighed the token embedding 35x. These pin the fix.
+
+
+@pytest.mark.parametrize("n_positions,d_model", [(32, 16), (256, 64), (1024, 384)])
+def test_raw_sinusoidal_table_has_the_rms_the_scaling_assumes(n_positions, d_model):
+    """The 1/sqrt(2) constant is analytic; this checks reality agrees.
+
+    Exact to four decimals for any even width. Very narrow odd widths run a few
+    percent low — d_model=7 measures 0.655 — because the final cosine column is
+    truncated, which no study here uses and which only ever makes the position
+    signal smaller than intended rather than larger.
+    """
+    rms = sinusoidal_encoding(n_positions, d_model).pow(2).mean().sqrt()
+    assert rms == pytest.approx(2.0**-0.5, abs=1e-4)
+
+
+@pytest.mark.parametrize("n_positions,d_model", [(256, 64), (1024, 384)])
+def test_scaled_table_matches_the_token_embedding_init_scale(n_positions, d_model):
+    """What makes learned-vs-sinusoidal a test of trainability, not magnitude."""
+    rms = scaled_sinusoidal_encoding(n_positions, d_model).pow(2).mean().sqrt()
+    assert rms == pytest.approx(EMBED_INIT_STD, rel=0.1)
+
+
+def test_position_signal_does_not_swamp_the_token_signal():
+    """The regression itself: 99.9% of the energy entering block one was positional."""
+    model = build(pos_encoding="sinusoidal")
+    token_energy = model.token_embedding.weight.pow(2).mean()
+    position_energy = model.position_table.pow(2).mean()
+    positional_share = position_energy / (position_energy + token_energy)
+    assert positional_share < 0.6, f"position signal is {positional_share:.1%} of the total"
+
+
+def test_sinusoidal_matches_the_learned_conditions_positional_share():
+    """A2 compares fixed against trainable, so the two must start at one scale."""
+    learned, sinusoidal = build(pos_encoding="learned"), build(pos_encoding="sinusoidal")
+    learned_rms = learned.position_embedding.weight.detach().pow(2).mean().sqrt()
+    sinusoidal_rms = sinusoidal.position_table.pow(2).mean().sqrt()
+    assert sinusoidal_rms == pytest.approx(learned_rms.item(), rel=0.15)
+
+
+def test_scaling_preserves_the_tables_shape_not_just_its_size():
+    """Rescaling must not alter which positions are distinguishable from which."""
+    raw = sinusoidal_encoding(64, 32)
+    scaled = scaled_sinusoidal_encoding(64, 32)
+    ratio = scaled / raw.where(raw.abs() > 1e-6, torch.ones_like(raw))
+    expected = EMBED_INIT_STD / 2.0**-0.5
+    assert scaled.shape == raw.shape
+    # One uniform factor everywhere, so no position is rescaled differently.
+    assert ratio[raw.abs() > 1e-6].std() == pytest.approx(0.0, abs=1e-6)
+    assert ratio[raw.abs() > 1e-6].mean() == pytest.approx(expected, rel=1e-5)
+
+
+def test_extrapolated_table_is_scaled_like_the_cached_one():
+    """The t > n_positions branch regenerates the table; it must scale it too.
+
+    Unscaled here, the long-context arm of A2 would read a 35x larger position
+    signal at exactly the lengths the study is about, and nothing else would
+    fail.
+    """
+    model = build(pos_encoding="sinusoidal", pos_capacity=16).eval()
+    short = model.position_table.pow(2).mean().sqrt()
+    with torch.no_grad():
+        model(torch.randint(0, VOCAB, (1, 32)))
+    long = scaled_sinusoidal_encoding(32, BASE["d_model"]).pow(2).mean().sqrt()
+    assert long == pytest.approx(short, rel=0.15)
 
 
 # ----------------------------------------------- long-context behaviour (A2)
