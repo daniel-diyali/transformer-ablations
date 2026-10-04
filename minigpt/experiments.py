@@ -388,10 +388,6 @@ def _select(names: list[str] | None) -> list[Study]:
     return [STUDIES[n] for n in names]
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 # ------------------------------------------------- long-context evaluation (A2)
 
 CONTEXT_EVAL = "context_eval.jsonl"
@@ -476,3 +472,7 @@ def evaluate_context_scaling(
             fh.write(json.dumps(row) + "\n")
     print(f"wrote {len(rows)} rows to {path}")
     return rows
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

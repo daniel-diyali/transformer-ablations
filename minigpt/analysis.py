@@ -170,10 +170,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 # ------------------------------------------------------------ sweep results
 
 CONDITION_COLOURS = ["#1f4e8c", "#c2571a", "#2a7f62", "#7a3b8f", "#8c1f3d"]
@@ -371,3 +367,7 @@ def plot_context_scaling(
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
