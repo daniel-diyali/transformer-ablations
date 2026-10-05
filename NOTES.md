@@ -273,3 +273,108 @@ outcome, and check exit codes rather than piped output.
 
 M6, the ablations, on `feat/ablations`: run all 27, then build the per-study charts
 showing individual seeds alongside the mean.
+
+## 2026-09-26 — thermal profiles, and two ways a long run dies quietly
+
+The sweep pinned the GPU at 98-99% for hours on a laptop, so runs are now paced:
+identical arithmetic with short idle gaps. `minigpt/thermal.py` explains why duty cycling
+was chosen over smaller batches or gradient accumulation — those would cut memory but
+would change results and invalidate the three runs already recorded at batch 32.
+
+**A default that is right for a sweep can be wrong for a test.** The CLI defaults to the
+`cool` profile, which idles 60s between runs. The CLI smoke test invoked `run` without a
+profile, inherited that default, and sat in `sleep()` — the whole suite looked hung at 40%
+with the process at 0% CPU and no output. It was not hung; it was obeying me. Anything on
+a test's path now opts out of pacing explicitly. Worth generalising: when adding a default
+that spends wall-clock, check what else picks it up.
+
+**Two claims were verified by hand and then left unguarded.** The commit message recorded
+that paced and unpaced runs produced identical validation loss to the last digit, but no
+test referenced `thermal` at all, while the module docstring said the invariance was
+"asserted directly in the tests". A verified claim and a guarded claim are not the same
+thing — the first is true today, the second stays true. `tests/test_thermal.py` now asserts
+both the bit-identical result and that a paced rerun still skips runs finished at full
+speed.
+
+**A backgrounded run dies with the shell that started it.** The sweep was launched with
+`nohup ... &` from a tool session and was gone within the hour, having logged a `resuming`
+line and nothing after it — the same way a backgrounded test run vanished mid-suite
+earlier. `nohup` ignores SIGHUP but does not survive the process group being cleaned up.
+Long runs are now started in their own session, and the check is `ps -o ppid` showing 1,
+not merely that a pid exists:
+
+    python -c 'import os,sys; os.fork() and sys.exit(0); os.setsid(); os.execv(...)'
+
+macOS has no `setsid(1)`, hence the inline fork. Note also that `pgrep -f
+'minigpt.experiments run'` matches the launching shell's own command line, so a liveness
+guard built on it reports a sweep that does not exist. Match the interpreter process, or
+check `ppid`.
+
+### Next step
+
+Still M6: the 27-run sweep is resuming under the `cool` profile at run 4 of 27. When it
+finishes, run `context-eval`, build the three study charts plus the context-scaling chart,
+and write `FINDINGS.md` reporting each hypothesis against what happened.
+
+## 2026-09-26 — Thermal pacing, and three quiet deaths
+
+**Daniel's machine was overheating.** Jarvis suspended the sweep mid-run; Daniel's
+call was to rerun it cooler. New standing rule, now in AGENTS.md: ask before any GPU
+or multi-hour job, and state duration and thermal impact up front.
+
+**Duty cycling was chosen because it is scientifically inert.** Same batch, same data
+order, same gradients — only wall-clock changes. Verified rather than assumed: same
+seed, paced and unpaced, identical final loss to the last digit. Smaller batch or
+gradient accumulation would cut memory but change results, and would have invalidated
+the three runs already recorded at batch 32.
+
+Consequence: `ThermalProfile` is deliberately **not** in `TrainConfig` and not in the
+config fingerprint. Had it been, resuming a paced sweep would have refused to skip
+those three runs and repeated a night of compute for no scientific reason.
+
+**A lever that fires is not a lever that works.** The first `cool` profile paused 0.6s
+every 4 steps. `paused_s` proved the sleeps happened exactly on schedule — and GPU
+utilization stayed at 97–99%, identical to full speed. Sub-second gaps hold the duty
+cycle but never let the GPU downclock. The same 63% duty as 6s pauses every 40 steps
+drops utilization to 0–7% during each gap. Measured mean fell 98–99% → **78.1%**.
+
+Second time in two days I've claimed an intervention worked without measuring the
+thing I cared about (the first was blaming OneDrive for a GPU-bound slowdown).
+
+**Three deaths, none the sweep's fault.** One reboot; twice the process was reaped
+because `nohup cmd &` leaves the child in the launching shell's process group. macOS
+has no `setsid(1)`. `scripts/launch_detached.py` uses `start_new_session=True`; the
+sweep now runs with ppid 1. Every death was survivable only because runs checkpoint
+and resume — that design has now paid for itself three times.
+
+**Not verified:** actual temperature and fan speed. Reading them needs `powermetrics`
+under sudo. Duty cycle and utilization are measured; the thermal outcome is inferred.
+
+## 2026-09-26 — Holding on battery
+
+Jarvis flagged that the laptop was unplugged at 95% with ~19 h of work left. Under
+sustained GPU load that battery lasts three or four hours, so the sweep would have
+flattened the machine and gone down with it — a fourth death, and the first that
+would also have cost Daniel his laptop mid-afternoon.
+
+The paced profiles now hold while unplugged and resume on power. Same reasoning as
+every other lever here: waiting delays arithmetic without changing it, so a run
+interrupted by an unplugged laptop produces the result it would have produced plugged
+in. Counted into `paused_s` so throughput accounting stays honest.
+
+**Detection fails open on purpose.** No `pmset`, a timeout, a non-macOS host — all
+report mains power. A probe that cannot answer must not be able to hang a sweep.
+
+Verified live: restarted on battery, skipped the four finished runs, and held before
+run 5 with the GPU at 5%.
+
+### Early A1 signal, 4 of 27 runs in
+
+pre-norm 1.8851 / 1.8835 / 1.8867 (spread 0.0032); post-norm s0 1.8895.
+
+The gap between conditions (~0.004) is about the size of the seed spread. If that
+holds across the remaining post-norm seeds, A1's hypothesis — that post-norm ends at
+*higher* loss — is only weakly supported at six layers, and the honest finding is
+"indistinguishable from seed noise at this scale". Exactly the outcome three seeds
+per condition exist to detect, and exactly the kind of result that gets quietly
+rounded into a win in repos that report a bare mean.

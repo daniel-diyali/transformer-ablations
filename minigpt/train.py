@@ -23,6 +23,7 @@ import torch
 
 from minigpt.data import get_batch, load_meta, load_tokens
 from minigpt.model import GPT, GPTConfig
+from minigpt.thermal import PROFILES, ThermalProfile
 
 DONE_MARKER = "DONE.json"
 FAILED_MARKER = "FAILED.json"
@@ -220,6 +221,7 @@ def _save_checkpoint(
     tokens_seen: int,
     next_eval: int,
     elapsed_s: float,
+    paused_s: float,
     batch_generator: torch.Generator,
 ) -> None:
     """Write atomically, so an interrupt cannot leave a half-written checkpoint.
@@ -238,6 +240,7 @@ def _save_checkpoint(
             "tokens_seen": tokens_seen,
             "next_eval": next_eval,
             "elapsed_s": elapsed_s,
+            "paused_s": paused_s,
             "batch_generator": batch_generator.get_state(),
             "torch_rng": torch.get_rng_state(),
         },
@@ -329,8 +332,13 @@ def _wandb_run(cfg: TrainConfig, device: str):
 # -------------------------------------------------------------- training loop
 
 
-def train(cfg: TrainConfig, resume: bool = True) -> dict:
-    """Train one model to its token budget. Returns the run record."""
+def train(cfg: TrainConfig, resume: bool = True, thermal: ThermalProfile | None = None) -> dict:
+    """Train one model to its token budget. Returns the run record.
+
+    `thermal` paces execution without altering results; see minigpt/thermal.py.
+    Defaults to no pacing so library callers and tests run at full speed.
+    """
+    thermal = thermal or PROFILES["full"]
     run_dir = cfg.run_dir()
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -354,7 +362,14 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
     next_eval = state["next_eval"] if state else 0
 
     (run_dir / "config.json").write_text(
-        json.dumps({"config": _config_to_dict(cfg), "provenance": provenance(device)}, indent=2)
+        json.dumps(
+            {
+                "config": _config_to_dict(cfg),
+                "provenance": provenance(device),
+                "thermal": thermal.as_dict(),
+            },
+            indent=2,
+        )
         + "\n"
     )
 
@@ -366,6 +381,7 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
     metrics_path = run_dir / "metrics.jsonl"
     started = time.perf_counter()
     elapsed_before = state["elapsed_s"] if state else 0.0
+    paused_total = state.get("paused_s", 0.0) if state else 0.0
 
     while tokens_seen < cfg.token_budget:
         lr = lr_at_token(tokens_seen, cfg)
@@ -400,6 +416,16 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
         optimizer.step()
         step += 1
 
+        # Idle briefly so the GPU is not saturated continuously. This changes
+        # wall-clock only; the arithmetic above is untouched.
+        paused_total += thermal.pause_if_due(step, device)
+        thermal.release_cache_if_due(step, device)
+
+        # Checked on the same cadence as the pause so this does not shell out
+        # to pmset every step. Waiting counts as idle, like any other pause.
+        if thermal.paces and step % thermal.pause_every_steps == 0:
+            paused_total += thermal.wait_for_mains(device)
+
         if tokens_seen >= next_eval or tokens_seen >= cfg.token_budget:
             elapsed = elapsed_before + time.perf_counter() - started
             entry = {
@@ -410,6 +436,8 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
                 "lr": lr,
                 "elapsed_s": round(elapsed, 2),
                 "tokens_per_s": round(tokens_seen / max(elapsed, 1e-9)),
+                "paused_s": round(paused_total, 1),
+                "compute_tokens_per_s": round(tokens_seen / max(elapsed - paused_total, 1e-9)),
             }
             with metrics_path.open("a") as fh:
                 fh.write(json.dumps(entry) + "\n")
@@ -430,6 +458,7 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
                 tokens_seen,
                 next_eval,
                 elapsed,
+                paused_total,
                 batch_generator,
             )
 
@@ -442,6 +471,9 @@ def train(cfg: TrainConfig, resume: bool = True) -> dict:
         "best_val_loss": _best_val_loss(metrics_path),
         "elapsed_s": round(elapsed, 2),
         "tokens_per_s": round(tokens_seen / max(elapsed, 1e-9)),
+        "paused_s": round(paused_total, 1),
+        "compute_tokens_per_s": round(tokens_seen / max(elapsed - paused_total, 1e-9)),
+        "thermal_profile": thermal.name,
         "device": device,
         "run_dir": str(run_dir),
     }
