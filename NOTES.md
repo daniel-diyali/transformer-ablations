@@ -469,6 +469,13 @@ sinusoidal rows in `context_eval.jsonl`. That is a multi-hour GPU job, so it wai
 Daniel per AGENTS.md. Reruns mean deleting the three run directories and their rows
 first — the sweep skips anything already recorded.
 
+One correction to the estimate above, because the sweep's own records contradict the
+tidy version: the 3.3 h figure is duty cycle only. Five runs in the completed sweep took
+192, 249, 286, 456 and 620 minutes against a 41-minute median, and that was the battery
+hold, not pacing. The laptop is on battery right now (68%, discharging), so a `cool`
+rerun started unplugged would hold immediately and report nothing for hours. Plugged in,
+`cool` is ~3.3 h and `full` ~2.1 h; unplugged, there is no honest estimate.
+
 ### Next step
 
 `FINDINGS.md` is written with A1, A3 and A2's learned-vs-RoPE arm reported in full and
