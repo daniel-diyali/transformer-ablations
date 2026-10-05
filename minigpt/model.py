@@ -25,6 +25,12 @@ from torch import Tensor
 NormPlacement = Literal["pre", "post"]
 PosEncoding = Literal["learned", "sinusoidal", "rope"]
 
+# GPT-2's initialisation scale for embeddings and linear weights. Named because
+# the fixed sinusoidal table is rescaled to match it, and the two must agree:
+# if they drift apart the position signal silently starts swamping the token
+# signal again, which is a ~0.75 nat regression that no test on shapes catches.
+EMBED_INIT_STD = 0.02
+
 
 @dataclass(frozen=True)
 class GPTConfig:
@@ -111,6 +117,40 @@ def sinusoidal_encoding(n_positions: int, d_model: int, base: float = 10_000.0) 
     pe[:, 0::2] = torch.sin(position * div)
     pe[:, 1::2] = torch.cos(position * div)[:, : pe[:, 1::2].shape[1]]
     return pe
+
+
+# Every component is a sine or cosine of a position-dependent phase, so each one
+# has mean square 1/2 and the table's per-component RMS is 1/sqrt(2) — regardless
+# of length or width. Analytic rather than measured from the table, so the scale
+# below cannot drift with n_positions.
+_SINUSOIDAL_COMPONENT_RMS = 2.0**-0.5
+
+
+def scaled_sinusoidal_encoding(
+    n_positions: int,
+    d_model: int,
+    base: float = 10_000.0,
+    std: float = EMBED_INIT_STD,
+) -> Tensor:
+    """Sinusoidal table rescaled to the token embedding's initialisation scale.
+
+    The raw table from the paper has per-component RMS 1/sqrt(2) ~ 0.707, while
+    token embeddings here are initialised at std 0.02 — a factor of 35. Added
+    untouched, the position signal carries 99.9% of the energy entering the first
+    block and the token identity is a rounding error; measured cost was ~0.75
+    nats of validation loss and a seed spread fifty times the other conditions'.
+
+    Matching the learned condition's init scale is what makes study A2 a fair
+    test: `learned` and `sinusoidal` then differ only in whether the encoding is
+    trainable, which is the variable under study, rather than also differing in
+    magnitude by 35x. The paper's own sqrt(d_model) scaling of the embeddings
+    serves the same purpose for a model whose embeddings are not initialised
+    this small; see NOTES.md for why that option was not the one taken.
+
+    The table's shape, and so the positional information it carries, is
+    unchanged — only its amplitude relative to the token embedding.
+    """
+    return sinusoidal_encoding(n_positions, d_model, base) * (std / _SINUSOIDAL_COMPONENT_RMS)
 
 
 def rope_tables(
@@ -273,10 +313,12 @@ class GPT(nn.Module):
         if cfg.pos_encoding == "learned":
             self.position_embedding = nn.Embedding(cfg.n_positions, cfg.d_model)
         elif cfg.pos_encoding == "sinusoidal":
-            # Not a parameter: fixed, and excluded from the optimizer.
+            # Not a parameter: fixed, and excluded from the optimizer. Scaled to
+            # the token embedding's init std so the position signal does not
+            # swamp it — see scaled_sinusoidal_encoding.
             self.register_buffer(
                 "position_table",
-                sinusoidal_encoding(cfg.n_positions, cfg.d_model),
+                scaled_sinusoidal_encoding(cfg.n_positions, cfg.d_model),
                 persistent=False,
             )
 
@@ -301,11 +343,11 @@ class GPT(nn.Module):
     @staticmethod
     def _init_weights(module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=EMBED_INIT_STD)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=EMBED_INIT_STD)
 
     def num_params(self, non_embedding: bool = True) -> int:
         """Parameter count. Position embeddings are excluded by convention."""
@@ -331,10 +373,13 @@ class GPT(nn.Module):
             x = x + self.position_embedding(torch.arange(t, device=idx.device))
         elif cfg.pos_encoding == "sinusoidal":
             # Deterministic, so it extends past n_positions for free.
+            # Both branches must use the same scaling, or evaluating past
+            # n_positions would quietly switch to a 35x larger table and break
+            # exactly the long-context measurement this study exists to make.
             table = (
                 self.position_table
                 if t <= cfg.n_positions
-                else sinusoidal_encoding(t, cfg.d_model).to(idx.device)
+                else scaled_sinusoidal_encoding(t, cfg.d_model).to(idx.device)
             )
             x = x + table[:t].to(x.dtype)
         else:

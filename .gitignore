@@ -4,8 +4,12 @@ data/
 tokenizer.json
 
 # Run outputs — checkpoints and logs stay local.
-# Only results.jsonl and figures/ are committed, so findings stay diffable.
-runs/
+# The two result tables and figures/ are committed, so findings stay diffable.
+# `runs/*` rather than `runs/`: git does not descend into an ignored directory,
+# so the negations below only work if the directory itself stays unignored.
+runs/*
+!runs/results.jsonl
+!runs/context_eval.jsonl
 *.pt
 *.ckpt
 wandb/

@@ -378,3 +378,99 @@ holds across the remaining post-norm seeds, A1's hypothesis — that post-norm e
 "indistinguishable from seed noise at this scale". Exactly the outcome three seeds
 per condition exist to detect, and exactly the kind of result that gets quietly
 rounded into a win in repos that report a bare mean.
+
+## 2026-10-04 — All 27 runs in, and one condition that measured a bug
+
+The sweep finished. Final means, three seeds each:
+
+| study | condition | mean | spread |
+|---|---|---|---|
+| A1 norm_placement | pre | 1.8851 | 0.0033 |
+| A1 norm_placement | post | 1.8926 | 0.0054 |
+| A2 pos_encoding | learned | 1.8858 | 0.0041 |
+| A2 pos_encoding | sinusoidal | 2.6397 | 0.1585 |
+| A2 pos_encoding | rope | 1.8297 | 0.0094 |
+| A3 head_count | h1 | 1.9146 | 0.0080 |
+| A3 head_count | h3 | 1.8870 | 0.0067 |
+| A3 head_count | h6 | 1.8851 | 0.0033 |
+| A3 head_count | h12 | 1.8866 | 0.0019 |
+
+**The early A1 read was wrong, and that is worth recording.** Four runs in I wrote that
+the pre/post gap was "about the size of the seed spread" and would likely land on
+"indistinguishable from seed noise". With all six runs the condition ranges are disjoint
+— pre [1.8835, 1.8867], post [1.8895, 1.8949] — so post-norm is reliably worse. The
+effect is small (0.0075 nats, roughly twice the spread) but it is an effect. Reading a
+trend off a third of a study was premature in the direction of caution rather than hype,
+which is the better way to be wrong, but it was still wrong.
+
+**The analysis that follows the sweep had never been run as a script.** `finish_sweep.sh`
+fired at 16:49 and every single command inside it died with `NameError`. Both
+`experiments.py` and `analysis.py` had `if __name__ == "__main__": raise SystemExit(main())`
+sitting in the middle of the file, with the functions `main()` dispatches to defined
+below it. Imported — which is all the test suite ever did — that is harmless. Run as
+`python -m`, the module stops executing at the exit, so `load_sweep`, `plot_study` and
+`plot_context_scaling` did not exist yet when `main()` reached for them.
+
+Nothing was lost; the sweep itself was fine and all four figures regenerated from the
+existing records once the ordering was fixed. But a module that imports cleanly can still
+be entirely broken as a script, and the suite had no test that ran either entrypoint the
+way the automation does.
+
+**Sinusoidal did not lose by 0.75 nats; it was handicapped.** The raw table from the
+paper has per-component RMS 1/sqrt(2) ≈ 0.707, while token embeddings initialise at std
+0.02. Added straight onto the embedding, the position signal outweighed token identity
+35x and carried 99.92% of the energy entering block one. The model spent the whole run
+digging the token out from under it.
+
+**The seed spread is what gave it away.** 0.1585 across three seeds, where every other
+condition in the sweep sits between 0.0019 and 0.0094. A condition that is both a
+large outlier in mean *and* a large outlier in variance is a bug far more often than it
+is a finding. The mean alone would have read as a plausible result.
+
+**Why the existing test missed it.** `test_loss_at_init` asserts loss at initialisation
+is near ln(8192) ≈ 9.01, and a model with a 35x position signal still scores there,
+because the final LayerNorm strips the overall scale before the tied head sees it.
+Checking that a number is plausible is not checking that the thing producing it is sound.
+Third time in this project that an intervention looked verified because the wrong
+quantity was measured.
+
+**The fix scales the table to the embedding's init std, not by sqrt(d_model).** The
+paper's convention multiplies the embeddings up instead; applied here that would have
+left sinusoidal at 76% positional share — the same confound, an order of magnitude
+smaller. Matching `EMBED_INIT_STD` puts learned and sinusoidal at 50.00% and 49.88%, so
+A2 compares trainability, which is the variable it is supposed to vary. The table's shape
+is untouched, so the positional information it carries is identical; only amplitude
+changes. Verified on a 2M-token spike before touching the sweep.
+
+Six new assertions pin the properties the bug violated rather than the constant itself,
+including the `t > n_positions` branch — the one A2's long-context arm runs through, and
+the one where a raw table would have gone unnoticed because nothing else inspects its
+amplitude.
+
+**A2's headline survives intact**, because it never depended on sinusoidal. Validation
+loss against evaluation context, trained at 256:
+
+| context | learned | rope |
+|---|---|---|
+| 128 | 1.9708 | 1.9170 |
+| 256 | 1.8858 | 1.8297 |
+| 512 | 3.2019 | 2.0001 |
+| 1024 | 4.0100 | 2.5769 |
+
+Learned collapses past the training context; RoPE degrades gracefully. That is the
+hypothesis confirmed, and it is the figure the study was chosen for.
+
+### Blocked — three reruns need GPU time
+
+`pos_encoding-sinusoidal-s0/s1/s2` have to be rerun on the fixed scale before A2 can be
+reported in full. At the 19,982 tok/s the spike measured, 50M tokens is ~42 min a run:
+**~2.1 h at full speed, ~3.3 h under `cool`**, plus a few minutes to redo the 12
+sinusoidal rows in `context_eval.jsonl`. That is a multi-hour GPU job, so it waits for
+Daniel per AGENTS.md. Reruns mean deleting the three run directories and their rows
+first — the sweep skips anything already recorded.
+
+### Next step
+
+`FINDINGS.md` is written with A1, A3 and A2's learned-vs-RoPE arm reported in full and
+the sinusoidal arm marked pending, on `docs/findings`. After approval and reruns:
+regenerate the two A2 charts, update both result tables, and replace the pending section.
