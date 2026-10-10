@@ -61,7 +61,7 @@ All 27 runs are complete. Full writeup with per-seed numbers and charts:
 | Study | Question | Hypothesis | Result |
 |---|---|---|---|
 | **A1 — norm placement** | Pre-norm vs post-norm | Post-norm trains less stably at this depth; the gap widens without LR warmup | Direction holds, magnitude does not: pre 1.8851 vs post 1.8926, no instability at all. Warmup arm not run |
-| **A2 — positional encoding** | Learned vs sinusoidal vs RoPE | Close at the training context; beyond it, learned encodings collapse while RoPE degrades gracefully | Collapse confirmed emphatically (learned +1.32 nats at 2x context, RoPE +0.17), but they are *not* close at the training context — RoPE wins outright. Sinusoidal arm rerunning |
+| **A2 — positional encoding** | Learned vs sinusoidal vs RoPE | Close at the training context; beyond it, learned encodings collapse while RoPE degrades gracefully | Collapse confirmed, mechanism corrected: *both* absolute encodings fall apart past the training context (learned +1.32 nats at 2x, sinusoidal +1.26) while RoPE gives up +0.17. Sinusoidal has no untrained rows, so the failure is absolute-vs-relative position, not untrained parameters. And they are *not* close at the training context — RoPE wins outright |
 | **A3 — head count** | 1 / 3 / 6 / 12 heads at fixed `d_model` | 1 head is clearly worse, returns diminish past 6 — parameter count held identical, so differences are attributable to attention structure alone | 1 head is worse by 0.0295 nats at identical parameter count, but returns are gone by **3** heads, not 6 |
 
 ## Setup as run
