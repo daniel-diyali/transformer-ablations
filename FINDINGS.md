@@ -88,8 +88,8 @@ longer than training, learned encodings collapse while RoPE degrades gracefully.
 | condition | mean | spread | seeds |
 |---|---|---|---|
 | rope | **1.8297** | 0.0094 | 1.8238, 1.8322, 1.8332 |
+| sinusoidal | 1.8791 | 0.0041 | 1.8777, 1.8778, 1.8818 |
 | learned | 1.8858 | 0.0041 | 1.8835, 1.8861, 1.8876 |
-| sinusoidal | *pending rerun* | — | — |
 
 ![A2](figures/pos_encoding.png)
 
@@ -98,61 +98,97 @@ longer than training, learned encodings collapse while RoPE degrades gracefully.
 Trained at 256; evaluated at 0.5x, 1x, 2x and 4x that length. Means across three seeds,
 from [`runs/context_eval.jsonl`](runs/context_eval.jsonl).
 
-| context | learned | rope | learned penalty vs 256 | rope penalty vs 256 |
-|---|---|---|---|---|
-| 128 | 1.9708 | 1.9170 | — | — |
-| **256** (trained) | 1.8858 | **1.8297** | — | — |
-| 512 | 3.2019 | 2.0001 | **+1.3161** | +0.1704 |
-| 1024 | 4.0100 | 2.5769 | **+2.1242** | +0.7472 |
+| context | learned | sinusoidal | rope |
+|---|---|---|---|
+| 128 | 1.9708 | 1.9637 | 1.9170 |
+| **256** (trained) | 1.8858 | 1.8791 | **1.8297** |
+| 512 | 3.2019 | 3.1408 | **2.0001** |
+| 1024 | 4.0100 | 3.9965 | **2.5769** |
+
+Penalty against each condition's own loss at the training context:
+
+| context | learned | sinusoidal | rope |
+|---|---|---|---|
+| 512 | +1.3161 | +1.2617 | **+0.1704** |
+| 1024 | +2.1242 | +2.1174 | **+0.7472** |
 
 ![A2 context scaling](figures/pos_encoding-context-scaling.png)
 
-**Verdict: the extrapolation claim is confirmed emphatically; the "they are close" claim is
-refuted.**
+**Verdict: the extrapolation claim is confirmed, but not for the reason the hypothesis gave.
+RoPE wins at the training context too, which it was not expected to.**
 
-Past the training context, learned encodings fall apart exactly as predicted. At 2x context
-learned loses 1.32 nats, which puts a fully trained model back at the loss the baseline run
-passed through around step 450 of 6,104 — roughly 4M tokens into a 50M-token budget. At 4x
-it is worse than the baseline at step 246. The reason is mechanical: positions 256–511 were
-never seen during training, so their embeddings are still at initialisation. RoPE loses 0.17 nats at the same length, and at 4x it is still better
-(2.5769) than learned is at 2x (3.2019). Relative phase generalises to positions the model
-never trained on; a lookup table cannot.
+RoPE is the only condition that survives past the training context. At 2x it gives up 0.17
+nats; at 4x it is still better (2.5769) than either absolute encoding manages at 2x. Both
+absolute encodings fall off a cliff: at 2x, learned loses 1.32 nats and sinusoidal 1.26,
+which puts a fully trained model back at the loss the baseline run passed through around
+step 450 of 6,104 — roughly 4M tokens into a 50M-token budget. At 4x both are worse than
+the baseline at step 246.
 
-The other half of the hypothesis was wrong. RoPE does not merely tie at the training
-context — it wins by 0.0561 nats, roughly 14x learned's seed spread and 6x its own. That
-was not expected, and it is the more practically useful of the two findings: RoPE is not a
-robustness tax paid for length generalisation, it is better at the length you trained on
-too.
+**Sinusoidal is what makes this a mechanism and not just an observation.** The obvious
+explanation for learned collapsing is that positions 256–511 were never seen in training,
+so their rows are still at initialisation — an untrained-parameter story. Sinusoidal has no
+untrained rows to blame. Its table is a closed-form function of position, defined at every
+index, identical at position 900 whether or not the model ever trained there. It collapses
+anyway, and to within 0.06 nats of learned at both lengths.
+
+So the untrained-rows account is wrong, or at least not necessary. What the two failing
+conditions share is that position enters the model as a vector *added to the token
+embedding*, carrying absolute position. Attention over those representations has no reason
+to behave sensibly when the absolute indices run past anything it has seen, whether the
+encoding of those indices was learned or derived. RoPE instead rotates queries and keys so
+that attention depends on the *difference* between positions, and a difference of 40 tokens
+looks the same at index 900 as at index 90.
+
+The hypothesis's other half was simply wrong: the three are not close at the training
+context. RoPE wins by 0.0494 over sinusoidal and 0.0561 over learned, roughly 12-14x the
+0.0041 seed spread both absolute conditions show. RoPE is not a robustness tax paid for
+length generalisation — it is better at the length you trained on as well, which is the more
+practically useful of the two findings.
+
+Between the two absolute encodings, sinusoidal edges learned by 0.0067 nats at the training
+context — above both of their 0.0041 spreads, so probably real, but small. Since the fix
+equalises their positional share at initialisation (50.00% learned, 49.88% sinusoidal), what
+remains is a comparison of trainability, and a fixed sinusoidal basis is apparently a hair
+better than a learned table at this budget. With n=3 and a gap that size, "roughly
+equivalent, with no advantage to making it learnable" is as much as the data supports.
 
 Worth naming as a confound in RoPE's favour: the learned condition carries 98,304 *more*
-parameters than RoPE (the 256 × 384 position table), 0.7% of the model, and still loses on
-both axes.
+parameters than RoPE and sinusoidal (the 256 × 384 position table), 0.7% of the model, and
+still loses on both axes.
 
-Both conditions are worse at 128 than at 256, which is expected and not a finding — half
-the context means less evidence per prediction.
+All three are worse at 128 than at 256, which is expected and not a finding — half the
+context means less evidence per prediction.
 
-### The sinusoidal arm is not reported, because the runs measured a bug
+### The sinusoidal numbers above are the second set, and the first set was a bug
 
-The three recorded sinusoidal runs came out at 2.6397 (spread 0.1585), about 0.75 nats
-behind learned. That number is not a property of sinusoidal encoding and is deliberately
-not reported above.
+The sweep's original sinusoidal runs came out at **2.6397** (spread 0.1585) — about 0.75
+nats behind learned, which reads as a clean, reportable finding: "the fixed sinusoidal basis
+is much worse than a learned table." It was an implementation bug, and the three runs were
+redone on the fix. Same code path, same seeds, same budget: **1.8791** (spread 0.0041).
 
 The raw table from the paper has per-component RMS 1/sqrt(2) ≈ 0.707, while token
 embeddings initialise at std 0.02. Added straight onto the embedding, the position signal
 outweighed token identity 35x and carried **99.92%** of the energy entering the first
-block. Every sinusoidal run spent its whole budget digging the token identity out from
-underneath its own position encoding.
+block. Every sinusoidal run spent its budget digging the token identity out from underneath
+its own position encoding. The fix scales the table to the embedding's initialisation std,
+which equalises positional share at 50.00% / 49.88% and makes the condition a test of
+trainability rather than of amplitude.
 
-The tell was the variance, not the mean. A spread of 0.1585 where every other condition in
-the sweep sits between 0.0019 and 0.0094 is the signature of a broken condition; the mean
-alone would have read as a plausible, publishable-looking result — "sinusoidal is much
-worse than learned" — and nothing would have contradicted it.
+**The tell was the variance, not the mean.** A spread of 0.1585 where every other condition
+in the sweep sits between 0.0019 and 0.0094 is the signature of a broken condition. The mean
+on its own was entirely plausible and nothing else contradicted it — `test_loss_at_init`
+passed throughout, because the final LayerNorm strips the overall scale before the tied head
+sees it, so a model with a 35x position signal still scores near ln(8192) at step 1.
 
-The scale is fixed (`fix/sinusoidal-scale`, PR #10): the table is now scaled to the
-embedding's initialisation std, putting learned and sinusoidal at 50.00% and 49.88%
-positional share, so the study compares *trainability* rather than amplitude. The three
-runs are queued to be redone, and this section plus both A2 figures will be regenerated
-from them.
+That is the methodological point worth keeping from this project: the bug was caught by a
+condition being an outlier in *both* mean and seed spread, and it would not have been caught
+by reading means alone. Three seeds per condition cost three times the compute and are the
+only reason the error surfaced before the writeup.
+
+The 0.75 nats it fabricated also pointed the wrong way about mechanism. On the bugged runs,
+sinusoidal looked like a weak encoding; corrected, it is within 0.007 of learned at the
+training context and collapses identically beyond it, which is what turns A2's result from
+"learned embeddings have untrained rows" into "absolute position does not extrapolate."
 
 ---
 
@@ -205,8 +241,10 @@ long-range positional machinery matters.
 Taking that seriously, by how much I would trust each result:
 
 - **RoPE's length extrapolation (A2).** The effect is an order of magnitude larger than the
-  noise, and the mechanism — relative phase versus a table with untrained rows — does not
-  depend on scale. This one I would bet on.
+  noise, and the mechanism — relative phase versus absolute position — does not depend on
+  scale. Sinusoidal is the reason I would bet on this one: two absolute encodings with
+  completely different parameterisations fail the same way by the same amount, which is what
+  a mechanism looks like rather than a coincidence of one implementation.
 - **One head is worse (A3).** Large, clean, and parameter-controlled. Likely holds.
 - **Three heads is enough (A3).** Holds *at this width*. Says nothing about 12 heads at
   `d_model` 768.
@@ -215,12 +253,19 @@ Taking that seriously, by how much I would trust each result:
 
 ## Cost
 
-45.6 hours of wall clock for the 27 runs, against about 19 hours of compute — each run is
-~41 minutes at the ~20,000 tok/s the sweep sustained, which is itself below the 31,202
-tok/s the baseline run managed on an idle machine. The 27-hour gap went to thermal pacing,
-which deliberately trades wall-clock for a quieter laptop, and to automatic holds while the
-machine was on battery. Both are scientifically inert — same batches, same data
-order, same gradients, verified bit-identical — so a paced run produces the result an
-unpaced one would have. See [NOTES.md](NOTES.md) for how that was established.
+38.7 hours of wall clock for the 27 runs as recorded, plus about 9 hours of sinusoidal runs
+that were thrown away with the bug, so roughly 48 hours spent to produce 19 hours of
+compute. A run is ~41 minutes at the ~20,000 tok/s the sweep sustained, itself well below
+the 31,202 tok/s the baseline managed on an idle machine; the three reruns alone ranged from
+15,800 to 26,046 tok/s depending on what else was running.
+
+The rest went to thermal pacing, which deliberately trades wall clock for a quieter laptop,
+and to automatic holds while the machine was on battery. Both are scientifically inert —
+same batches, same data order, same gradients, verified bit-identical — so a paced run
+produces the result an unpaced one would have. See [NOTES.md](NOTES.md) for how that was
+established.
+
+The 9 discarded hours are the real cost of the position-scale bug, and they are cheap next
+to shipping the writeup with a fabricated 0.75-nat finding in it.
 
 $0 of paid compute, as required.
