@@ -469,8 +469,62 @@ sinusoidal rows in `context_eval.jsonl`. That is a multi-hour GPU job, so it wai
 Daniel per AGENTS.md. Reruns mean deleting the three run directories and their rows
 first — the sweep skips anything already recorded.
 
+One correction to the estimate above, because the sweep's own records contradict the
+tidy version: the 3.3 h figure is duty cycle only. Five runs in the completed sweep took
+192, 249, 286, 456 and 620 minutes against a 41-minute median, and that was the battery
+hold, not pacing. The laptop is on battery right now (68%, discharging), so a `cool`
+rerun started unplugged would hold immediately and report nothing for hours. Plugged in,
+`cool` is ~3.3 h and `full` ~2.1 h; unplugged, there is no honest estimate.
+
 ### Next step
 
 `FINDINGS.md` is written with A1, A3 and A2's learned-vs-RoPE arm reported in full and
 the sinusoidal arm marked pending, on `docs/findings`. After approval and reruns:
 regenerate the two A2 charts, update both result tables, and replace the pending section.
+
+## 2026-10-09 — The reruns, and a mechanism I had wrong
+
+Daniel ran the three sinusoidal runs himself at `--thermal full`, plugged in, ~42 min each.
+Sinusoidal lands at **1.8791** (spread 0.0041) against the bug's 2.6397 (spread 0.1585).
+
+**A1 and A3 regenerated bit-identically** — neither figure appeared in the diff. That is
+the blast radius the fix was supposed to have, and it is the first time this project has
+had a clean before/after on exactly one condition.
+
+### I had the mechanism wrong, and sinusoidal is what showed it
+
+`FINDINGS.md` said learned encodings collapse past the training context because positions
+256–511 were never trained and their rows are still at initialisation. Reasonable, and
+wrong — or at least not load-bearing.
+
+Sinusoidal has no untrained rows. Its table is a closed-form function of position, the same
+at index 900 whether or not the model ever saw index 900. It collapses anyway: 3.1408 at 2x
+against learned's 3.2019, 3.9965 at 4x against 4.0100. Two encodings with nothing in common
+parameterisation-wise, failing within 0.06 nats of each other.
+
+What they share is that position enters as a vector *added to the token embedding* and
+carries absolute index. RoPE makes attention depend on the difference between positions
+instead, so a 40-token gap looks identical at index 900 and index 90. That is the real
+dividing line, and I would not have found it from the learned-vs-RoPE pair alone — the
+untrained-rows story fits that pair perfectly and happens to be wrong.
+
+Two conditions failing identically is a mechanism; one condition failing is an anecdote.
+The third arm of a three-way study is the one that distinguishes them, which is an argument
+for not quietly dropping an inconvenient condition when it misbehaves.
+
+### The bug cost about nine hours and was worth catching
+
+Discarded: ~9 h of bugged sinusoidal runs (one of them the 456-minute battery-held one).
+Recorded total is now 38.7 h for 27 runs, roughly 48 h spent end to end against 19 h of
+actual compute.
+
+Also worth recording: the fabricated 0.75-nat gap pointed the wrong way about *mechanism*,
+not just magnitude. On the bugged numbers sinusoidal looked like a weak encoding, which
+would have left A2 reading "learned beats sinusoidal, RoPE beats both" — a tidy,
+conventional, entirely wrong story in which the untrained-rows explanation survives intact.
+
+### Next step
+
+M7, the last milestone: flagship run at 200M tokens, pre-norm + RoPE, h6 for comparability
+with the sweep. ~1.8 h on an idle machine, so it needs Daniel's go-ahead and mains power.
+Then FR6.5 samples from it and the README's final pass.
